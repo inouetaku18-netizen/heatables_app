@@ -13,8 +13,10 @@ def customVersionCode = (int)(((new Date().getTime() / 1000) - 1749360556) / 60)
 
 android {
     namespace = "edu.kit.teco.openWearable"
-    compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    //compileSdk = flutter.compileSdkVersion
+    compileSdk = 36
+    //ndkVersion = flutter.ndkVersion
+    ndkVersion = "27.0.12077973"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
