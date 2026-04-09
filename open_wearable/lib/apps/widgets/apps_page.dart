@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_platform_widgets/flutter_platform_widgets.dart';
 import 'package:go_router/go_router.dart';
 import 'package:open_earable_flutter/open_earable_flutter.dart';
+import 'package:open_wearable/apps/audio_response_measure/audio_response_measurement_view.dart';
 import 'package:open_wearable/apps/heart_tracker/widgets/heart_tracker_page.dart';
 import 'package:open_wearable/apps/heatables/widgets/heatables_page.dart'; //追加
 import 'package:open_wearable/apps/posture_tracker/model/earable_attitude_tracker.dart';
@@ -142,9 +143,7 @@ final List<AppInfo> _apps = [
 
           if (ppgSensor == null) {
             return PlatformScaffold(
-              appBar: PlatformAppBar(
-                title: PlatformText('Heart Tracker'),
-              ),
+              appBar: PlatformAppBar(title: PlatformText('Heart Tracker')),
               body: Center(
                 child: PlatformText('No PPG sensor found on this wearable'),
               ),
@@ -152,8 +151,9 @@ final List<AppInfo> _apps = [
           }
 
           final accelerometerSensor = findAccelerometerSensor(sensors);
-          final opticalTemperatureSensor =
-              _findOpticalTemperatureSensor(sensors);
+          final opticalTemperatureSensor = _findOpticalTemperatureSensor(
+            sensors,
+          );
 
           return HeartTrackerPage(
             wearable: wearable,
@@ -163,17 +163,12 @@ final List<AppInfo> _apps = [
           );
         }
         return PlatformScaffold(
-          appBar: PlatformAppBar(
-            title: PlatformText("Heart Tracker"),
-          ),
-          body: Center(
-            child: PlatformText("No PPG Sensor Found"),
-          ),
+          appBar: PlatformAppBar(title: PlatformText("Heart Tracker")),
+          body: Center(child: PlatformText("No PPG Sensor Found")),
         );
       },
     ),
   ),
-  /*
   AppInfo(
     logoPath: "",
     title: "Audio Response",
@@ -184,8 +179,9 @@ final List<AppInfo> _apps = [
       supportedDevices: _audioResponseSupportedDevices,
       startApp: (wearable, _) async {
         if (wearable is WearableManager) {
-          //return AudioResponseMeasurementView(
-          //manager: wearable as WearableManager);
+          return AudioResponseMeasurementView(
+            manager: wearable as WearableManager,
+          );
         } else {
           return PlatformScaffold(
             appBar: PlatformAppBar(
@@ -193,14 +189,14 @@ final List<AppInfo> _apps = [
             ),
             body: Center(
               child: PlatformText(
-                  "Audio Response Measurement not supported on this device."),
+                "Audio Response Measurement not supported on this device.",
+              ),
             ),
           );
         }
       },
     ),
   ),
-  */
   AppInfo(
     logoPath: "lib/apps/heatables/assets/logo.png",
     title: "Heatables",
@@ -214,33 +210,39 @@ final List<AppInfo> _apps = [
           final sensors = wearable.requireCapability<SensorManager>().sensors;
           final ppgSensor = findPpgSensor(sensors);
 
+          //Debug
+          for (final sensor in sensors) {
+            debugPrint('Sensor name: ${sensor.sensorName}');
+            debugPrint('Chart title: ${sensor.chartTitle}');
+            debugPrint('Axis names: ${sensor.axisNames.join(', ')}');
+            debugPrint('---');
+          }
+
           if (ppgSensor == null) {
             return PlatformScaffold(
-              appBar: PlatformAppBar(
-                title: PlatformText('Heatables Demo'),
-              ),
+              appBar: PlatformAppBar(title: PlatformText('Heatables Demo')),
               body: Center(
                 child: PlatformText('No PPG sensor found on this wearable'),
               ),
             );
           }
 
-          final opticalTemperatureSensor =
-              _findOpticalTemperatureSensor(sensors);
+          final accelerometerSensor = findAccelerometerSensor(sensors);
+
+          final opticalTemperatureSensor = _findOpticalTemperatureSensor(
+            sensors,
+          );
 
           return HeatablesPage(
             wearable: wearable,
             ppgSensor: ppgSensor,
             opticalTemperatureSensor: opticalTemperatureSensor,
+            accelerometerSensor: accelerometerSensor,
           );
         }
         return PlatformScaffold(
-          appBar: PlatformAppBar(
-            title: PlatformText("Heatables Demo"),
-          ),
-          body: Center(
-            child: PlatformText("No PPG Sensor Found"),
-          ),
+          appBar: PlatformAppBar(title: PlatformText("Heatables Demo")),
+          body: Center(child: PlatformText("No PPG Sensor Found")),
         );
       },
     ),
@@ -313,9 +315,9 @@ class AppsPage extends StatelessWidget {
             padding: const EdgeInsets.only(left: 2, bottom: 8),
             child: Text(
               'Available apps',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
             ),
           ),
           ...orderedApps.map(
@@ -335,10 +337,7 @@ class _AppListEntry {
   final AppInfo app;
   final bool isEnabled;
 
-  const _AppListEntry({
-    required this.app,
-    required this.isEnabled,
-  });
+  const _AppListEntry({required this.app, required this.isEnabled});
 }
 
 class _AppsHeroCard extends StatelessWidget {
@@ -361,10 +360,7 @@ class _AppsHeroCard extends StatelessWidget {
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [
-            Color(0xFF835B58),
-            Color(0xFFB48A86),
-          ],
+          colors: [Color(0xFF835B58), Color(0xFFB48A86)],
         ),
         boxShadow: [
           BoxShadow(
@@ -434,10 +430,7 @@ class _HeroStatPill extends StatelessWidget {
   final String label;
   final IconData icon;
 
-  const _HeroStatPill({
-    required this.label,
-    required this.icon,
-  });
+  const _HeroStatPill({required this.label, required this.icon});
 
   @override
   Widget build(BuildContext context) {

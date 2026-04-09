@@ -18,12 +18,14 @@ class HeatablesPage extends StatefulWidget {
   final Wearable wearable;
   final Sensor ppgSensor;
   final Sensor? opticalTemperatureSensor;
+  final Sensor? accelerometerSensor;
 
   const HeatablesPage({
     super.key,
     required this.wearable,
     required this.ppgSensor,
     this.opticalTemperatureSensor,
+    this.accelerometerSensor,
   });
 
   @override
@@ -49,6 +51,10 @@ class _HeatablesPageState extends State<HeatablesPage> {
 
   // ESP32(Heatables)用スライダー値（0-255）
   int heatablesSliderValue = 0;
+
+  //心拍数の平均の表示
+  List<double> heartRateHistory = [];
+  static const int maxHistoryLength = 5;
 
   @override
   void initState() {
@@ -110,6 +116,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
         Provider.of<SensorConfigurationProvider>(context, listen: false);
     _sensorConfigProvider = configProvider;
     final ppgSensor = widget.ppgSensor;
+    final accelerometerSensor = widget.accelerometerSensor;
     final opticalTemperatureSensor = widget.opticalTemperatureSensor;
 
     final sampleFreq = _configureSensorForStreaming(
@@ -118,6 +125,14 @@ class _HeatablesPageState extends State<HeatablesPage> {
       fallbackFrequency: 50.0,
       targetFrequencyHz: 50,
     );
+    if (accelerometerSensor != null) {
+      _configureSensorForStreaming(
+        accelerometerSensor,
+        configProvider,
+        fallbackFrequency: 50.0,
+        targetFrequencyHz: 50,
+      );
+    }
 
     debugPrint(
         'opticalTemperatureSensor is ${opticalTemperatureSensor == null ? "null" : "not null"}');
@@ -143,6 +158,25 @@ class _HeatablesPageState extends State<HeatablesPage> {
         .cast<PpgOpticalSample>()
         .asBroadcastStream();
 
+    Stream<PpgMotionSample>? accelerometerMotionStream;
+    if (accelerometerSensor != null) {
+      accelerometerMotionStream = accelerometerSensor.sensorStream
+          .map<PpgMotionSample?>((data) {
+            final values = _sensorValuesAsDoubles(data);
+            if (values == null) {
+              return null;
+            }
+            return _extractImuMotionSample(
+              accelerometerSensor,
+              data,
+              values,
+            );
+          })
+          .where((sample) => sample != null)
+          .cast<PpgMotionSample>()
+          .asBroadcastStream();
+    }
+
     Stream<PpgTemperatureSample>? opticalTemperatureStream;
     if (opticalTemperatureSensor != null) {
       opticalTemperatureStream = opticalTemperatureSensor.sensorStream
@@ -164,6 +198,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
 
     final ppgFilter = PpgFilter(
       inputStream: ppgStream,
+      motionStream: accelerometerMotionStream,
       opticalTemperatureStream: opticalTemperatureStream,
       sampleFreq: sampleFreq,
       timestampExponent: ppgSensor.timestampExponent,
@@ -328,11 +363,50 @@ class _HeatablesPageState extends State<HeatablesPage> {
     );
   }
 
+  PpgMotionSample _extractImuMotionSample(
+    Sensor sensor,
+    SensorValue data,
+    List<double> values,
+  ) {
+    int? findAxisIndex(List<String> keywords) {
+      for (var i = 0; i < sensor.axisNames.length; i++) {
+        final axis = sensor.axisNames[i].toLowerCase();
+        if (keywords.any(axis.contains)) {
+          return i;
+        }
+      }
+      return null;
+    }
+
+    double valueAt(int? index, double fallback) {
+      if (index != null && index >= 0 && index < values.length) {
+        return values[index];
+      }
+      return fallback;
+    }
+
+    final fallbackX = values.isNotEmpty ? values[0] : 0.0;
+    final fallbackY = values.length > 1 ? values[1] : 0.0;
+    final fallbackZ = values.length > 2 ? values[2] : 0.0;
+
+    final x = valueAt(findAxisIndex(['x']), fallbackX);
+    final y = valueAt(findAxisIndex(['y']), fallbackY);
+    final z = valueAt(findAxisIndex(['z']), fallbackZ);
+
+    return PpgMotionSample(
+      timestamp: data.timestamp,
+      x: x,
+      y: y,
+      z: z,
+    );
+  }
+
   PpgTemperatureSample? _extractOpticalTemperatureSample(
     Sensor sensor,
     SensorValue data,
     List<double> values,
   ) {
+    //debugPrint('Extracting temperature sample data $data and values $values');
     if (values.isEmpty) {
       return null;
     }
@@ -366,6 +440,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
     final displayPpgSignalStream = _displayPpgSignalStream;
     final heartRateStream = _heartRateStream;
     final temperatureStream = _temperatureStream;
+    final signalQualityStream = _signalQualityStream;
 
     return PlatformScaffold(
       appBar: PlatformAppBar(
@@ -373,13 +448,15 @@ class _HeatablesPageState extends State<HeatablesPage> {
       ),
       body: displayPpgSignalStream == null ||
               heartRateStream == null ||
-              temperatureStream == null
+              temperatureStream == null ||
+              signalQualityStream == null
           ? const Center(child: PlatformCircularProgressIndicator())
           : _buildContent(
               context,
               displayPpgSignalStream,
               heartRateStream,
               temperatureStream,
+              signalQualityStream,
             ),
     );
   }
@@ -389,6 +466,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
     Stream<(int, double)> displayPpgSignalStream,
     Stream<double?> heartRateStream,
     Stream<double?> temperatureStream,
+    Stream<PpgSignalQuality> signalQualityStream,
   ) {
     return ListView(
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 20),
@@ -399,15 +477,37 @@ class _HeatablesPageState extends State<HeatablesPage> {
         const SizedBox(height: 12),
         StreamBuilder<double?>(
           stream: temperatureStream,
-          builder: (context, snapshot) {
-            final celsius = snapshot.data;
-            return _MetricCard(
-              title: 'Temperature',
-              icon: Icons.thermostat_rounded,
-              value: celsius != null && celsius.isFinite
-                  ? celsius.toStringAsFixed(1)
-                  : '--',
-              unit: '°C',
+          builder: (context, tempSnapshot) {
+            final celsius = tempSnapshot.data;
+            return StreamBuilder<PpgSignalQuality>(
+              stream: signalQualityStream,
+              initialData: PpgSignalQuality.unavailable,
+              builder: (context, qualitySnapshot) {
+                final quality =
+                    qualitySnapshot.data ?? PpgSignalQuality.unavailable;
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // 体温表示（既存の_MetricCardを利用）
+                    Expanded(
+                      child: _MetricCard(
+                        title: 'Temp',
+                        icon: Icons.thermostat_rounded,
+                        value: celsius != null && celsius.isFinite
+                            ? celsius.toStringAsFixed(1)
+                            : '--',
+                        unit: '°C',
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    // 信号品質表示に_SignalQualityCardを利用
+                    SizedBox(
+                      width: 225, // 適宜調整してください
+                      child: _SignalQualityCard(quality: quality),
+                    ),
+                  ],
+                );
+              },
             );
           },
         ),
@@ -416,12 +516,40 @@ class _HeatablesPageState extends State<HeatablesPage> {
           stream: heartRateStream,
           builder: (context, snapshot) {
             final bpm = snapshot.data;
-            return _MetricCard(
-              title: 'Heart Rate',
-              icon: Icons.favorite_rounded,
-              value:
-                  bpm != null && bpm.isFinite ? bpm.toStringAsFixed(0) : '--',
-              unit: 'BPM',
+            if (bpm != null && bpm.isFinite) {
+              heartRateHistory.add(bpm);
+              if (heartRateHistory.length > maxHistoryLength) {
+                heartRateHistory.removeAt(0);
+              }
+            }
+
+            final avgBpm = heartRateHistory.isNotEmpty
+                ? (heartRateHistory.reduce((a, b) => a + b) /
+                    heartRateHistory.length)
+                : null;
+
+            return Row(
+              children: [
+                Expanded(
+                  child: _MetricCard(
+                    title: 'Heart Rate',
+                    icon: Icons.favorite_rounded,
+                    value: bpm != null && bpm.isFinite
+                        ? bpm.toStringAsFixed(0)
+                        : '--',
+                    unit: 'BPM',
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _MetricCard(
+                    title: 'Average Heart Rate',
+                    icon: Icons.favorite_border_rounded,
+                    value: avgBpm != null ? avgBpm.toStringAsFixed(0) : '--',
+                    unit: 'BPM',
+                  ),
+                ),
+              ],
             );
           },
         ),
@@ -664,5 +792,107 @@ class _SignalPanelCard extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _SignalQualityCard extends StatelessWidget {
+  final PpgSignalQuality quality;
+
+  const _SignalQualityCard({
+    required this.quality,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final (label, hint, icon, color) = _presentQuality(colorScheme);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      icon,
+                      size: 18,
+                      color: color,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      'PPG Signal',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
+                  ],
+                ),
+                Container(
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  child: Text(
+                    label,
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                          color: color,
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              hint,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  (String, String, IconData, Color) _presentQuality(ColorScheme colors) {
+    switch (quality) {
+      case PpgSignalQuality.unavailable:
+        return (
+          'Unavailable',
+          'No stable heartbeat waveform yet.',
+          Icons.portable_wifi_off_rounded,
+          colors.onSurfaceVariant,
+        );
+      case PpgSignalQuality.bad:
+        return (
+          'Bad',
+          'Signal is noisy.',
+          Icons.signal_cellular_connected_no_internet_4_bar_rounded,
+          colors.error,
+        );
+      case PpgSignalQuality.fair:
+        return (
+          'Fair',
+          'Heartbeat is partially visible.',
+          Icons.network_check_rounded,
+          Colors.orange.shade700,
+        );
+      case PpgSignalQuality.good:
+        return (
+          'Good',
+          'Signal quality is good.',
+          Icons.check_circle_rounded,
+          Colors.green.shade700,
+        );
+    }
   }
 }

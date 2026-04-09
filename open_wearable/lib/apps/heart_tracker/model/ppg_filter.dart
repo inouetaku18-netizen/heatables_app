@@ -98,7 +98,7 @@ class PpgFilter {
   double? _latestOpticalTemperatureCelsius;
   int? _latestOpticalTemperatureTimestamp;
 
-  static const double _reasonableInEarTemperatureCelsius = 32.0;
+  static const double _reasonableInEarTemperatureCelsius = 0.0; //32.0
   static const double _maxTemperatureSampleAgeSec = 20.0;
   static const double _minBeatIntervalSec = 0.25;
   static const double _maxBeatIntervalSec = 2.0;

@@ -86,8 +86,8 @@ class PpgFilter {
 
   double _hrEstimate = 75.0;
   double _hrCovariance = 1.0;
-  final double _hrProcessNoise = 0.02;
-  final double _hrMeasurementNoise = 5.0;
+  double _hrProcessNoise = 0.02; //0.02
+  double _hrMeasurementNoise = 5.0; //5.0
 
   double _hrvEstimateMs = 35.0;
   final double _hrvSmoothingAlpha = 0.18;
@@ -102,7 +102,7 @@ class PpgFilter {
   double? _latestOpticalTemperatureCelsius;
   int? _latestOpticalTemperatureTimestamp;
 
-  static const double _reasonableInEarTemperatureCelsius = 32.0;
+  static const double _reasonableInEarTemperatureCelsius = 0.0;
   static const double _maxTemperatureSampleAgeSec = 20.0;
   static const double _minBeatIntervalSec = 0.25;
   static const double _maxBeatIntervalSec = 2.0;
@@ -121,19 +121,17 @@ class PpgFilter {
     _sampleStream;
     _metricsStream;
 
-    /*
-    debugPrint(
-        'opticalTemperatureStream is ${opticalTemperatureStream == null ? "null" : "not null"}');
+    //debugPrint(
+    //'opticalTemperatureStream is ${opticalTemperatureStream == null ? "null" : "not null"}');
 
     if (opticalTemperatureStream != null) {
       _temperatureSubscription = opticalTemperatureStream!.listen((sample) {
         _latestOpticalTemperatureCelsius = sample.celsius;
         _latestOpticalTemperatureTimestamp = sample.timestamp;
         _temperatureStreamController.add(sample.celsius);
-        debugPrint('Temperature sample added: ${sample.celsius}');
+        //debugPrint('Temperature sample added: ${sample.celsius}');
       });
     }
-    */
 
     debugPrint('Initialization...');
   }
@@ -612,6 +610,9 @@ class PpgFilter {
     final buffer = <_MotionAwareSample>[];
     var lastEvaluationTick = double.negativeInfinity;
 
+    PpgSignalQuality? previousQuality;
+    double? lastValidHeartRate;
+
     await for (final sample in _sampleStream) {
       buffer.add(sample);
       buffer.removeWhere(
@@ -706,22 +707,77 @@ class PpgFilter {
         }
       }
 
+      void adjustKalmanParameters(PpgSignalQuality quality) {
+        switch (quality) {
+          case PpgSignalQuality.good:
+            //_hrProcessNoise = 0.10;
+            _hrMeasurementNoise = 1.0;
+            break;
+          case PpgSignalQuality.fair:
+            //_hrProcessNoise = 0.01;
+            _hrMeasurementNoise = 5.0;
+            break;
+          case PpgSignalQuality.bad:
+            //_hrProcessNoise = 0.005;
+            _hrMeasurementNoise = 20.0;
+            break;
+          case PpgSignalQuality.unavailable:
+            //_hrProcessNoise = 0.001;
+            _hrMeasurementNoise = 10.0;
+            break;
+        }
+        debugPrint('Kalman parameters updated: '
+            '_hrProcessNoise=$_hrProcessNoise, '
+            '_hrMeasurementNoise=$_hrMeasurementNoise');
+      }
+
       final classifiedQuality = _classifyQuality(qualityScore);
+
+      if (previousQuality != null) {
+        if ((previousQuality == PpgSignalQuality.good ||
+                previousQuality == PpgSignalQuality.fair) &&
+            (classifiedQuality == PpgSignalQuality.bad ||
+                classifiedQuality == PpgSignalQuality.unavailable)) {
+          if (peakHeartRate != null && peakHeartRate.isFinite) {
+            lastValidHeartRate = peakHeartRate;
+            debugPrint(
+                'Signal quality degraded: hold heart rate $lastValidHeartRate');
+          }
+        }
+
+        if ((previousQuality == PpgSignalQuality.bad ||
+                previousQuality == PpgSignalQuality.unavailable) &&
+            (classifiedQuality == PpgSignalQuality.good ||
+                classifiedQuality == PpgSignalQuality.fair)) {
+          if (lastValidHeartRate != null && lastValidHeartRate.isFinite) {
+            _hrEstimate = lastValidHeartRate;
+            _hrCovariance = 1.0;
+            debugPrint(
+                'Signal quality improved: reset Kalman filter HR estimate to $lastValidHeartRate');
+            // 保持した心拍数は使い切ったのでクリアしておく
+            lastValidHeartRate = null;
+          }
+        }
+      }
+
       if (classifiedQuality == PpgSignalQuality.bad ||
           classifiedQuality == PpgSignalQuality.unavailable) {
-        yield PpgVitals.invalid(
-          signalQuality: classifiedQuality,
-        );
+        yield PpgVitals.invalid(signalQuality: classifiedQuality);
+        previousQuality = classifiedQuality;
         continue;
       }
+
+      adjustKalmanParameters(classifiedQuality);
 
       if (peakHeartRate == null) {
         yield PpgVitals.invalid(
           signalQuality: classifiedQuality,
         );
+        previousQuality = classifiedQuality;
         continue;
       }
       final smoothedHeartRate = _kalmanUpdateHeartRate(peakHeartRate);
+      //final smoothedHeartRate = peakHeartRate;
 
       double? smoothedHrvMs;
       if (ibiTicks.length >= 2) {
@@ -740,6 +796,8 @@ class PpgFilter {
         hrvRmssdMs: smoothedHrvMs,
         signalQuality: classifiedQuality,
       );
+
+      previousQuality = classifiedQuality;
     }
   }
 }
