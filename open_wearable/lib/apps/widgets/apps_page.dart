@@ -41,6 +41,7 @@ class AppInfo {
 }
 
 const Color _appAccentColor = Color(0xFF9A6F6B);
+List<Wearable> connectedDevices = [];
 
 final List<AppSupportOption> _postureSupportedDevices = [
   AppSupportOption(
@@ -60,6 +61,22 @@ final List<AppSupportOption> _audioResponseSupportedDevices = [
   AppSupportOption(
     label: "Audio Device",
     requirement: AppRequirement.hasCapability<WearableManager>(),
+  ),
+];
+
+final List<AppSupportOption> _heatablesSupportedDevices = [
+  AppSupportOption(
+    label: "SmartRing",
+    requirement: AppRequirement.hasSensorByAliases(ppgSensorAliases),
+  ),
+  AppSupportOption(
+    label: "Heatables",
+    requirement: AppRequirement.custom(
+      (wearable) {
+        final name = wearable.name;
+        return name.contains("Heatables");
+      },
+    ),
   ),
 ];
 
@@ -115,7 +132,7 @@ final List<AppInfo> _apps = [
     accentColor: _appAccentColor,
     widget: SelectEarableView(
       supportedDevices: _postureSupportedDevices,
-      startApp: (wearable, sensorConfigProvider) async {
+      startApp: (wearable, sensorConfigProvider, _) async {
         return PostureTrackerView(
           EarableAttitudeTracker(
             wearable.requireCapability<SensorManager>(),
@@ -136,7 +153,7 @@ final List<AppInfo> _apps = [
     accentColor: _appAccentColor,
     widget: SelectEarableView(
       supportedDevices: _heartSupportedDevices,
-      startApp: (wearable, _) async {
+      startApp: (wearable, _, connectedDevices) async {
         if (wearable.hasCapability<SensorManager>()) {
           final sensors = wearable.requireCapability<SensorManager>().sensors;
           final ppgSensor = findPpgSensor(sensors);
@@ -177,7 +194,7 @@ final List<AppInfo> _apps = [
     accentColor: _appAccentColor,
     widget: SelectEarableView(
       supportedDevices: _audioResponseSupportedDevices,
-      startApp: (wearable, _) async {
+      startApp: (wearable, _, connectedDevices) async {
         if (wearable is WearableManager) {
           return AudioResponseMeasurementView(
             manager: wearable as WearableManager,
@@ -201,11 +218,18 @@ final List<AppInfo> _apps = [
     logoPath: "lib/apps/heatables/assets/logo.png",
     title: "Heatables",
     description: "Thermal stimulation based on HRV and temperature",
-    supportedDevices: _heartSupportedDevices,
+    supportedDevices: _heatablesSupportedDevices,
     accentColor: _appAccentColor,
     widget: SelectEarableView(
-      supportedDevices: _heartSupportedDevices,
-      startApp: (wearable, _) async {
+      supportedDevices: _heatablesSupportedDevices,
+      connectedDevices: connectedDevices,
+      startApp: (wearable, _, connectedDevices) async {
+        debugPrint('Wearable Name: ${wearable.name}');
+
+        for (final wearable in connectedDevices) {
+          debugPrint('Connected wearable device name: ${wearable.name}');
+        }
+
         if (wearable.hasCapability<SensorManager>()) {
           final sensors = wearable.requireCapability<SensorManager>().sensors;
           final ppgSensor = findPpgSensor(sensors);
@@ -238,6 +262,7 @@ final List<AppInfo> _apps = [
             ppgSensor: ppgSensor,
             opticalTemperatureSensor: opticalTemperatureSensor,
             accelerometerSensor: accelerometerSensor,
+            connectedDevices: connectedDevices,
           );
         }
         return PlatformScaffold(

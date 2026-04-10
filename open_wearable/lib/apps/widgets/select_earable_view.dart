@@ -12,15 +12,15 @@ import 'package:provider/provider.dart';
 
 class SelectEarableView extends StatefulWidget {
   final Future<Widget> Function(
-    Wearable,
-    SensorConfigurationProvider,
-  ) startApp;
+      Wearable, SensorConfigurationProvider, List<Wearable>) startApp;
   final List<AppSupportOption> supportedDevices;
+  final List<Wearable> connectedDevices;
 
   const SelectEarableView({
     super.key,
     required this.startApp,
     this.supportedDevices = const [],
+    this.connectedDevices = const [],
   });
 
   @override
@@ -234,6 +234,9 @@ class _SelectEarableViewState extends State<SelectEarableView> {
       return;
     }
 
+    final connectedWearables = context.read<WearablesProvider>().wearables;
+    final connectedDevices = connectedWearables;
+
     final selectedWearable = compatibleWearables
         .where((wearable) => wearable.deviceId == selectedId)
         .firstOrNull;
@@ -259,9 +262,7 @@ class _SelectEarableViewState extends State<SelectEarableView> {
 
     try {
       final app = await widget.startApp(
-        selectedWearable,
-        sensorConfigProvider,
-      );
+          selectedWearable, sensorConfigProvider, connectedDevices);
 
       if (!mounted) {
         return;

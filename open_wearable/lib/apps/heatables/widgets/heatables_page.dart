@@ -4,7 +4,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:open_earable_flutter/open_earable_flutter.dart';
 
-import 'package:universal_ble/universal_ble.dart';
+//import 'package:universal_ble/universal_ble.dart';
 
 import 'package:flutter_platform_widgets/flutter_platform_widgets.dart';
 import 'package:open_wearable/apps/heatables/model/ppg_filter.dart';
@@ -19,6 +19,7 @@ class HeatablesPage extends StatefulWidget {
   final Sensor ppgSensor;
   final Sensor? opticalTemperatureSensor;
   final Sensor? accelerometerSensor;
+  final List<Wearable> connectedDevices;
 
   const HeatablesPage({
     super.key,
@@ -26,34 +27,35 @@ class HeatablesPage extends StatefulWidget {
     required this.ppgSensor,
     this.opticalTemperatureSensor,
     this.accelerometerSensor,
+    this.connectedDevices = const [],
   });
 
   @override
   State<HeatablesPage> createState() => _HeatablesPageState();
 }
 
-class Notifier extends WearableDisconnectNotifier {
-  // 状態とメソッドを定義
-}
-
 class _HeatablesPageState extends State<HeatablesPage> {
   PpgFilter? _ppgFilter;
   Stream<(int, double)>? _displayPpgSignalStream;
   Stream<double?>? _heartRateStream;
+  Stream<double?>? _hrvStream;
   Stream<double?>? _temperatureStream;
   Stream<PpgSignalQuality>? _signalQualityStream;
   SensorConfigurationProvider? _sensorConfigProvider;
 
-  List<DiscoveredDevice> scannedDevices = [];
-  final Map<String, Wearable> connectedWearables = {};
+  //final WearableManager _wearableManager = WearableManager();
 
-  final WearableManager _wearableManager = WearableManager();
+  late Wearable heatablesDevice;
 
   // ESP32(Heatables)用スライダー値（0-255）
   int heatablesSliderValue = 0;
 
+  final String _characteristicUuid = "6bb7da44-e8b9-3e3f-6d5a-e212c378d2df";
+  final String _serviceUuid = "a542957a-968b-91fa-254c-62c7a367a692";
+
   //心拍数の平均の表示
   List<double> heartRateHistory = [];
+  List<double> hrvHistory = [];
   static const int maxHistoryLength = 5;
 
   @override
@@ -63,52 +65,55 @@ class _HeatablesPageState extends State<HeatablesPage> {
       if (!mounted) {
         return;
       }
+
+      heatablesDevice = widget.connectedDevices.firstWhere(
+        (device) => device.name.toLowerCase().contains('heatables'),
+      );
+
       _initializePipeline();
     });
 
-    // WearableFactoryの登録例（必要に応じて拡張）
-    _wearableManager.addWearableFactory(HeatablesFactory());
-
-    startOpenEarableScan();
+    //startOpenEarableScan();
   }
 
-  void startOpenEarableScan() async {
-    await _wearableManager.startScan();
-    _wearableManager.scanStream.listen((device) {
-      if (device.name.isNotEmpty &&
-          !scannedDevices.any((d) => d.id == device.id)) {
-        setState(() {
-          scannedDevices.add(device);
-        });
-      }
-    });
-  }
-
-  Future<void> connectToOpenEarable(DiscoveredDevice device) async {
-    final wearable = await _wearableManager.connectToDevice(device);
-    final id = wearable.deviceId;
-    connectedWearables[id] = wearable;
-
-    setState(() {});
-  }
-
-  Future<void> disconnectOpenEarable(String deviceId) async {
-    final wearable = connectedWearables[deviceId];
-    if (wearable != null) {
-      await wearable.disconnect();
-
-      connectedWearables.remove(deviceId);
-      setState(() {});
+  @override
+  void dispose() {
+    final configProvider = _sensorConfigProvider;
+    if (configProvider != null) {
+      unawaited(configProvider.turnOffAllSensors());
     }
+    _ppgFilter?.dispose();
+    super.dispose();
   }
 
   Future<void> sendDataToHeatables(List<int> data) async {
-    // HeatablesWearableを探して送信
-    final heatables = connectedWearables.values
-        .whereType<HeatablesWearable>()
-        .firstWhere((_) => true);
+    try {
+      final writeManager = heatablesDevice.getCapability<BleGattManager>();
+      final deviceId = heatablesDevice.deviceId;
 
-    await heatables.sendData(data);
+      final serviceUuid = _serviceUuid.toLowerCase();
+      final characteristicUuid = _characteristicUuid.toLowerCase();
+
+      debugPrint('writeManager: $writeManager');
+      debugPrint(
+          'Device ID: $deviceId, Service UUID: $serviceUuid, Characteristic UUID: $characteristicUuid');
+      debugPrint('Data to send: $data');
+
+      if (writeManager != null) {
+        try {
+          await writeManager.write(
+            deviceId: deviceId,
+            serviceId: serviceUuid,
+            characteristicId: characteristicUuid,
+            byteData: data,
+          );
+        } catch (e) {
+          debugPrint('Send data error: $e');
+        }
+      }
+    } catch (e) {
+      debugPrint('Error in sendDataToHeatables: $e');
+    }
   }
 
   void _initializePipeline() {
@@ -118,6 +123,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
     final ppgSensor = widget.ppgSensor;
     final accelerometerSensor = widget.accelerometerSensor;
     final opticalTemperatureSensor = widget.opticalTemperatureSensor;
+    final connectedWearables = widget.connectedDevices;
 
     final sampleFreq = _configureSensorForStreaming(
       ppgSensor,
@@ -132,6 +138,10 @@ class _HeatablesPageState extends State<HeatablesPage> {
         fallbackFrequency: 50.0,
         targetFrequencyHz: 50,
       );
+    }
+
+    for (final wearable in connectedWearables) {
+      debugPrint('Connected wearable device name: ${wearable.name}');
     }
 
     debugPrint(
@@ -212,20 +222,11 @@ class _HeatablesPageState extends State<HeatablesPage> {
     setState(() {
       _displayPpgSignalStream = ppgFilter.displaySignalStream;
       _heartRateStream = ppgFilter.heartRateStream;
+      _hrvStream = ppgFilter.hrvStream;
       _temperatureStream = ppgFilter.temperatureStream;
       _signalQualityStream = ppgFilter.signalQualityStream;
       _ppgFilter = ppgFilter;
     });
-  }
-
-  @override
-  void dispose() {
-    final configProvider = _sensorConfigProvider;
-    if (configProvider != null) {
-      unawaited(configProvider.turnOffAllSensors());
-    }
-    _ppgFilter?.dispose();
-    super.dispose();
   }
 
   double _configureSensorForStreaming(
@@ -439,6 +440,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
   Widget build(BuildContext context) {
     final displayPpgSignalStream = _displayPpgSignalStream;
     final heartRateStream = _heartRateStream;
+    final hrvStream = _hrvStream;
     final temperatureStream = _temperatureStream;
     final signalQualityStream = _signalQualityStream;
 
@@ -448,6 +450,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
       ),
       body: displayPpgSignalStream == null ||
               heartRateStream == null ||
+              hrvStream == null ||
               temperatureStream == null ||
               signalQualityStream == null
           ? const Center(child: PlatformCircularProgressIndicator())
@@ -455,6 +458,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
               context,
               displayPpgSignalStream,
               heartRateStream,
+              hrvStream,
               temperatureStream,
               signalQualityStream,
             ),
@@ -465,6 +469,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
     BuildContext context,
     Stream<(int, double)> displayPpgSignalStream,
     Stream<double?> heartRateStream,
+    Stream<double?> hrvStream,
     Stream<double?> temperatureStream,
     Stream<PpgSignalQuality> signalQualityStream,
   ) {
@@ -523,33 +528,45 @@ class _HeatablesPageState extends State<HeatablesPage> {
               }
             }
 
-            final avgBpm = heartRateHistory.isNotEmpty
-                ? (heartRateHistory.reduce((a, b) => a + b) /
-                    heartRateHistory.length)
-                : null;
+            return StreamBuilder<double?>(
+              stream: hrvStream,
+              builder: (context, hrvSnapshot) {
+                final hrv = hrvSnapshot.data;
+                if (hrv != null && hrv.isFinite) {
+                  hrvHistory.add(hrv);
+                  if (hrvHistory.length > maxHistoryLength) {
+                    hrvHistory.removeAt(0);
+                  }
+                }
+                final avgHrv = hrvHistory.isNotEmpty
+                    ? (hrvHistory.reduce((a, b) => a + b) / hrvHistory.length)
+                    : null;
 
-            return Row(
-              children: [
-                Expanded(
-                  child: _MetricCard(
-                    title: 'Heart Rate',
-                    icon: Icons.favorite_rounded,
-                    value: bpm != null && bpm.isFinite
-                        ? bpm.toStringAsFixed(0)
-                        : '--',
-                    unit: 'BPM',
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _MetricCard(
-                    title: 'Average Heart Rate',
-                    icon: Icons.favorite_border_rounded,
-                    value: avgBpm != null ? avgBpm.toStringAsFixed(0) : '--',
-                    unit: 'BPM',
-                  ),
-                ),
-              ],
+                return Row(
+                  children: [
+                    Expanded(
+                      child: _MetricCard(
+                        title: 'Heart Rate',
+                        icon: Icons.favorite_rounded,
+                        value: bpm != null && bpm.isFinite
+                            ? bpm.toStringAsFixed(0)
+                            : '--',
+                        unit: 'BPM',
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _MetricCard(
+                        title: 'RMSSD',
+                        icon: Icons.bar_chart_rounded,
+                        value:
+                            avgHrv != null ? avgHrv.toStringAsFixed(1) : '--',
+                        unit: 'ms',
+                      ),
+                    ),
+                  ],
+                );
+              },
             );
           },
         ),
@@ -564,98 +581,40 @@ class _HeatablesPageState extends State<HeatablesPage> {
           fixedMeasureMin: null,
           fixedMeasureMax: null,
         ),
-        const SizedBox(height: 12),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(
-                Icons.warning_amber_rounded,
-                size: 13,
-                color: Theme.of(context).colorScheme.error,
-              ),
-              const SizedBox(width: 5),
-              Expanded(
-                child: Text(
-                  'This view is for demonstration purposes only. It is not a medical device and must not be used for diagnosis, treatment, or emergency decisions.',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+        //_buildScanSection(),
+        const SizedBox(height: 24), // 少し余白
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Heatables Control',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
                       ),
                 ),
-              ),
-            ],
+                Slider(
+                  value: heatablesSliderValue.toDouble(),
+                  min: 0,
+                  max: 255,
+                  divisions: 255,
+                  label: heatablesSliderValue.toString(),
+                  onChanged: (double value) {
+                    setState(() {
+                      heatablesSliderValue = value.round();
+                    });
+                    sendDataToHeatables([heatablesSliderValue]);
+                  },
+                ),
+                Text('Value: $heatablesSliderValue'),
+              ],
+            ),
           ),
         ),
       ],
     );
-  }
-}
-
-// Heatablesデバイス（ESP32）用カスタムウェアラブル
-class HeatablesWearable extends Wearable {
-  final String _deviceId;
-  // Characteristic UUID
-  final String characteristicUuid = "6bb7da44-e8b9-3e3f-6d5a-e212c378d2df";
-  final String serviceUuid = "a542957a-968b-91fa-254c-62c7a367a692";
-
-  HeatablesWearable(String name, dynamic disconnectNotifier, this._deviceId)
-      : super(name: name, disconnectNotifier: disconnectNotifier);
-
-  @override
-  Future<void> disconnect() async {
-    // 切断処理
-  }
-
-  @override
-  String get deviceId => _deviceId;
-
-  // 書き込み用例。対象のControlManager等に応じて実装を調整
-  Future<void> sendData(List<int> data) async {
-    final writeManager = getCapability<BleGattManager>();
-    if (writeManager != null) {
-      try {
-        // 例: ControlManagerのwriteCharacteristicで送信（要実装詳細に合わせ調整）
-        await writeManager.write(
-          deviceId: deviceId,
-          serviceId: serviceUuid,
-          characteristicId: characteristicUuid,
-          byteData: data,
-        );
-      } catch (e) {
-        debugPrint('Send data error: $e');
-      }
-    }
-  }
-}
-
-// heatablesFactory
-class HeatablesFactory extends WearableFactory {
-  @override
-  Future<bool> matches(
-    DiscoveredDevice device,
-    List<BleService> services,
-  ) async {
-    if (device.name.toLowerCase().contains('heatables')) {
-      return true;
-    }
-    return false;
-  }
-
-  @override
-  Future<Wearable> createFromDevice(
-    DiscoveredDevice device, {
-    Set<ConnectionOption> options = const {},
-  }) async {
-    if (bleManager == null) {
-      throw Exception("BleGattManager is not initialized");
-    }
-
-    // Create and return an instance of your custom wearable
-    String name = device.name;
-    Notifier disconnectNotifier = Notifier();
-
-    return HeatablesWearable(name, disconnectNotifier, device.id);
   }
 }
 

@@ -604,7 +604,7 @@ class PpgFilter {
   Stream<PpgVitals> _createVitalsStream() async* {
     final ticksPerSecond = pow(10, -timestampExponent).toDouble();
     final ticksToMilliseconds = pow(10, timestampExponent + 3).toDouble();
-    final windowDurationTicks = 10.0 * ticksPerSecond;
+    final windowDurationTicks = 60.0 * ticksPerSecond;
     final minimumWindowTicks = 4.0 * ticksPerSecond;
     final evaluationPeriodTicks = max(1.0, ticksPerSecond);
     final buffer = <_MotionAwareSample>[];
@@ -726,9 +726,9 @@ class PpgFilter {
             _hrMeasurementNoise = 10.0;
             break;
         }
-        debugPrint('Kalman parameters updated: '
+        /*debugPrint('Kalman parameters updated: '
             '_hrProcessNoise=$_hrProcessNoise, '
-            '_hrMeasurementNoise=$_hrMeasurementNoise');
+            '_hrMeasurementNoise=$_hrMeasurementNoise');*/
       }
 
       final classifiedQuality = _classifyQuality(qualityScore);
