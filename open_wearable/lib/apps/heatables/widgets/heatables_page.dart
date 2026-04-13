@@ -8,6 +8,7 @@ import 'package:open_earable_flutter/open_earable_flutter.dart';
 
 import 'package:flutter_platform_widgets/flutter_platform_widgets.dart';
 import 'package:open_wearable/apps/heatables/model/ppg_filter.dart';
+import 'package:open_wearable/apps/heatables/model/heatables_pwm.dart';
 import 'package:open_wearable/apps/heatables/widgets/rowling_chart.dart';
 import 'package:open_wearable/models/wearable_display_group.dart';
 import 'package:open_wearable/view_models/sensor_configuration_provider.dart';
@@ -34,6 +35,8 @@ class HeatablesPage extends StatefulWidget {
   State<HeatablesPage> createState() => _HeatablesPageState();
 }
 
+enum ControlMode { manual, autopilot }
+
 class _HeatablesPageState extends State<HeatablesPage> {
   PpgFilter? _ppgFilter;
   Stream<(int, double)>? _displayPpgSignalStream;
@@ -44,6 +47,8 @@ class _HeatablesPageState extends State<HeatablesPage> {
   SensorConfigurationProvider? _sensorConfigProvider;
 
   //final WearableManager _wearableManager = WearableManager();
+  ControlMode _controlMode = ControlMode.manual;
+  StreamSubscription<double?>? _heartRateSubscription;
 
   late Wearable heatablesDevice;
 
@@ -79,11 +84,38 @@ class _HeatablesPageState extends State<HeatablesPage> {
   @override
   void dispose() {
     final configProvider = _sensorConfigProvider;
+    _heartRateSubscription?.cancel();
     if (configProvider != null) {
       unawaited(configProvider.turnOffAllSensors());
     }
     _ppgFilter?.dispose();
     super.dispose();
+  }
+
+  void _onModeChanged(ControlMode mode) {
+    if (_controlMode == mode) return;
+    setState(() {
+      _controlMode = mode;
+      heatablesSliderValue = 0;
+    });
+    sendDataToHeatables([0]);
+
+    if (mode == ControlMode.autopilot) {
+      // Autopilot開始：心拍数ストリーム監視してPWM計算＆送信
+      _heartRateSubscription = _heartRateStream?.listen((bpm) {
+        if (bpm != null && bpm.isFinite) {
+          final pwmValue = AutopilotController.pwmFromHeartRate(bpm);
+          sendDataToHeatables([pwmValue]);
+          setState(() {
+            heatablesSliderValue = pwmValue;
+          });
+        }
+      });
+    } else {
+      // Manualモード時は心拍数購読解除
+      _heartRateSubscription?.cancel();
+      _heartRateSubscription = null;
+    }
   }
 
   Future<void> sendDataToHeatables(List<int> data) async {
@@ -595,20 +627,53 @@ class _HeatablesPageState extends State<HeatablesPage> {
                         fontWeight: FontWeight.bold,
                       ),
                 ),
-                Slider(
-                  value: heatablesSliderValue.toDouble(),
-                  min: 0,
-                  max: 255,
-                  divisions: 255,
-                  label: heatablesSliderValue.toString(),
-                  onChanged: (double value) {
-                    setState(() {
-                      heatablesSliderValue = value.round();
-                    });
-                    sendDataToHeatables([heatablesSliderValue]);
-                  },
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () => _onModeChanged(ControlMode.manual),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _controlMode == ControlMode.manual
+                              ? Theme.of(context).colorScheme.primary
+                              : null,
+                        ),
+                        child: const Text('Manual'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () => _onModeChanged(ControlMode.autopilot),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _controlMode == ControlMode.autopilot
+                              ? Theme.of(context).colorScheme.primary
+                              : null,
+                        ),
+                        child: const Text('Autopilot'),
+                      ),
+                    ),
+                  ],
                 ),
-                Text('Value: $heatablesSliderValue'),
+                const SizedBox(height: 12),
+                if (_controlMode == ControlMode.manual) ...[
+                  Slider(
+                    value: heatablesSliderValue.toDouble(),
+                    min: 0,
+                    max: 255,
+                    divisions: 255,
+                    label: heatablesSliderValue.toString(),
+                    onChanged: (double value) {
+                      setState(() {
+                        heatablesSliderValue = value.round();
+                      });
+                      sendDataToHeatables([heatablesSliderValue]);
+                    },
+                  ),
+                  Text('Value: $heatablesSliderValue'),
+                ] else ...[
+                  Text('Autopilot mode active. PWM controlled by heart rate.'),
+                  Text('Current PWM: $heatablesSliderValue'),
+                ],
               ],
             ),
           ),
