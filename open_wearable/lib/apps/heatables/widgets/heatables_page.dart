@@ -480,10 +480,12 @@ class _HeatablesPageState extends State<HeatablesPage> {
           group: WearableDisplayGroup.single(wearable: widget.wearable),
         ),
         const SizedBox(height: 12),
-        StreamBuilder<double?>(
-          stream: temperatureStream,
-          builder: (context, tempSnapshot) {
-            final celsius = tempSnapshot.data;
+        StreamBuilder<PpgSignalQuality>(
+          stream: signalQualityStream,
+          builder: (context, qualitySnapshot) {
+            final quality =
+                qualitySnapshot.data ?? PpgSignalQuality.unavailable;
+            final isEquipmentOn = quality != PpgSignalQuality.unavailable;
             return StreamBuilder<PpgSignalQuality>(
               stream: signalQualityStream,
               initialData: PpgSignalQuality.unavailable,
@@ -496,12 +498,10 @@ class _HeatablesPageState extends State<HeatablesPage> {
                     // 体温表示（既存の_MetricCardを利用）
                     Expanded(
                       child: _MetricCard(
-                        title: 'Temp',
-                        icon: Icons.thermostat_rounded,
-                        value: celsius != null && celsius.isFinite
-                            ? celsius.toStringAsFixed(1)
-                            : '--',
-                        unit: '°C',
+                        title: 'Equipment',
+                        icon: Icons.power_settings_new_rounded,
+                        value: isEquipmentOn ? 'ON' : 'OFF',
+                        unit: '',
                       ),
                     ),
                     const SizedBox(width: 12),

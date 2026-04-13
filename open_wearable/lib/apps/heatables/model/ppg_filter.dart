@@ -312,6 +312,8 @@ class PpgFilter {
         timestamp: sample.timestamp,
         rawGreen: selectedOpticalSignal,
         rawAmbient: sample.ambient,
+        rawRed: sample.red,
+        rawIr: sample.ir,
         signal: bounded,
         displaySignal: displaySignal,
         motionLevel: motionSuppressor.motionLevel,
@@ -624,6 +626,13 @@ class PpgFilter {
       }
       lastEvaluationTick = sample.timestamp.toDouble();
 
+      //debugPrint('rawRed: ${sample.rawRed}, rawIr: ${sample.rawIr}');
+      if (sample.rawRed >= 9.5e6 && sample.rawIr >= 9.5e6) {
+        yield const PpgVitals.invalid(
+            signalQuality: PpgSignalQuality.unavailable);
+        continue;
+      }
+
       if (buffer.length < 20 ||
           (buffer.last.timestamp - buffer.first.timestamp) <
               minimumWindowTicks) {
@@ -719,11 +728,11 @@ class PpgFilter {
             break;
           case PpgSignalQuality.bad:
             //_hrProcessNoise = 0.005;
-            _hrMeasurementNoise = 20.0;
+            //_hrMeasurementNoise = 20.0;
             break;
           case PpgSignalQuality.unavailable:
             //_hrProcessNoise = 0.001;
-            _hrMeasurementNoise = 10.0;
+            //_hrMeasurementNoise = 10.0;
             break;
         }
         /*debugPrint('Kalman parameters updated: '
@@ -864,6 +873,8 @@ class _MotionAwareSample {
   final int timestamp;
   final double rawGreen;
   final double rawAmbient;
+  final double rawRed;
+  final double rawIr;
   final double signal;
   final double displaySignal;
   final double motionLevel;
@@ -872,6 +883,8 @@ class _MotionAwareSample {
     required this.timestamp,
     required this.rawGreen,
     required this.rawAmbient,
+    required this.rawRed,
+    required this.rawIr,
     required this.signal,
     required this.displaySignal,
     required this.motionLevel,
