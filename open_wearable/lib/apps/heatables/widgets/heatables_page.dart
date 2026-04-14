@@ -10,6 +10,7 @@ import 'package:flutter_platform_widgets/flutter_platform_widgets.dart';
 import 'package:open_wearable/apps/heatables/model/ppg_filter.dart';
 import 'package:open_wearable/apps/heatables/model/heatables_pwm.dart';
 import 'package:open_wearable/apps/heatables/widgets/rowling_chart.dart';
+import 'package:open_wearable/apps/heatables/widgets/autopilot_page.dart';
 import 'package:open_wearable/models/wearable_display_group.dart';
 import 'package:open_wearable/view_models/sensor_configuration_provider.dart';
 import 'package:open_wearable/widgets/devices/devices_page.dart';
@@ -42,6 +43,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
   Stream<(int, double)>? _displayPpgSignalStream;
   Stream<double?>? _heartRateStream;
   Stream<double?>? _hrvStream;
+  Stream<double?>? _hrvLfhfStream;
   Stream<double?>? _temperatureStream;
   Stream<PpgSignalQuality>? _signalQualityStream;
   SensorConfigurationProvider? _sensorConfigProvider;
@@ -97,10 +99,20 @@ class _HeatablesPageState extends State<HeatablesPage> {
     setState(() {
       _controlMode = mode;
       heatablesSliderValue = 0;
+      pwmHistory.clear();
     });
     sendDataToHeatables([0]);
 
     if (mode == ControlMode.autopilot) {
+      // Autopilot画面へ遷移
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => AutopilotPage(
+            heartRateStream: _heartRateStream,
+            initialPwmValue: heatablesSliderValue,
+          ),
+        ),
+      );
       // Autopilot開始：心拍数ストリーム監視してPWM計算＆送信
       _heartRateSubscription = _heartRateStream?.listen((bpm) {
         if (bpm != null && bpm.isFinite) {
@@ -108,6 +120,10 @@ class _HeatablesPageState extends State<HeatablesPage> {
           sendDataToHeatables([pwmValue]);
           setState(() {
             heatablesSliderValue = pwmValue;
+            pwmHistory.add(pwmValue);
+            if (pwmHistory.length > pwmHistoryLength) {
+              pwmHistory.removeAt(0);
+            }
           });
         }
       });
@@ -117,6 +133,10 @@ class _HeatablesPageState extends State<HeatablesPage> {
       _heartRateSubscription = null;
     }
   }
+
+  // PWM履歴リストを追加
+  List<int> pwmHistory = [];
+  static const int pwmHistoryLength = 50; // 表示用に長めに保持
 
   Future<void> sendDataToHeatables(List<int> data) async {
     try {
@@ -255,6 +275,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
       _displayPpgSignalStream = ppgFilter.displaySignalStream;
       _heartRateStream = ppgFilter.heartRateStream;
       _hrvStream = ppgFilter.hrvStream;
+      _hrvLfhfStream = ppgFilter.hrvLfhfStream;
       _temperatureStream = ppgFilter.temperatureStream;
       _signalQualityStream = ppgFilter.signalQualityStream;
       _ppgFilter = ppgFilter;
@@ -473,6 +494,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
     final displayPpgSignalStream = _displayPpgSignalStream;
     final heartRateStream = _heartRateStream;
     final hrvStream = _hrvStream;
+    final hrvLfhfStream = _hrvLfhfStream;
     final temperatureStream = _temperatureStream;
     final signalQualityStream = _signalQualityStream;
 
@@ -483,6 +505,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
       body: displayPpgSignalStream == null ||
               heartRateStream == null ||
               hrvStream == null ||
+              hrvLfhfStream == null ||
               temperatureStream == null ||
               signalQualityStream == null
           ? const Center(child: PlatformCircularProgressIndicator())
@@ -491,6 +514,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
               displayPpgSignalStream,
               heartRateStream,
               hrvStream,
+              hrvLfhfStream,
               temperatureStream,
               signalQualityStream,
             ),
@@ -502,6 +526,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
     Stream<(int, double)> displayPpgSignalStream,
     Stream<double?> heartRateStream,
     Stream<double?> hrvStream,
+    Stream<double?> hrvLfhfStream,
     Stream<double?> temperatureStream,
     Stream<PpgSignalQuality> signalQualityStream,
   ) {
@@ -561,7 +586,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
             }
 
             return StreamBuilder<double?>(
-              stream: hrvStream,
+              stream: hrvLfhfStream,
               builder: (context, hrvSnapshot) {
                 final hrv = hrvSnapshot.data;
                 if (hrv != null && hrv.isFinite) {
@@ -589,11 +614,11 @@ class _HeatablesPageState extends State<HeatablesPage> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: _MetricCard(
-                        title: 'RMSSD',
+                        title: 'LF/HF Ratio',
                         icon: Icons.bar_chart_rounded,
                         value:
                             avgHrv != null ? avgHrv.toStringAsFixed(1) : '--',
-                        unit: 'ms',
+                        unit: '',
                       ),
                     ),
                   ],

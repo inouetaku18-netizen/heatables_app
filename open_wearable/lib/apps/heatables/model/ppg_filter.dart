@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 
 import 'package:open_wearable/apps/heatables/model/band_pass_filter.dart';
 import 'package:open_wearable/apps/heatables/model/high_pass_filter.dart';
+import 'package:open_wearable/apps/heatables/model/hrv_lfhf.dart';
 
 enum PpgSignalQuality {
   unavailable,
@@ -34,18 +35,21 @@ class PpgOpticalSample {
 class PpgVitals {
   final double? heartRateBpm;
   final double? hrvRmssdMs;
+  final double? hrvLfhfRatio;
   final PpgSignalQuality signalQuality;
 
   const PpgVitals({
     required this.heartRateBpm,
     required this.hrvRmssdMs,
+    required this.hrvLfhfRatio,
     required this.signalQuality,
   });
 
   const PpgVitals.invalid({
     this.signalQuality = PpgSignalQuality.unavailable,
   })  : heartRateBpm = null,
-        hrvRmssdMs = null;
+        hrvRmssdMs = null,
+        hrvLfhfRatio = null;
 }
 
 class PpgMotionSample {
@@ -83,6 +87,8 @@ class PpgFilter {
 
   final StreamController<double?> _temperatureStreamController =
       StreamController.broadcast(); //追加
+
+  final HrvLfhfCalculator _hrvLfhfCalculator = HrvLfhfCalculator();
 
   double _hrEstimate = 75.0;
   double _hrCovariance = 1.0;
@@ -160,6 +166,9 @@ class PpgFilter {
   Stream<double?> get hrvStream =>
       _metricsStream.map((vitals) => vitals.hrvRmssdMs);
 
+  Stream<double?> get hrvLfhfStream =>
+      _metricsStream.map((vitals) => vitals.hrvLfhfRatio);
+
   Stream<PpgSignalQuality> get signalQualityStream =>
       _metricsStream.map((vitals) => vitals.signalQuality).distinct();
 
@@ -213,6 +222,7 @@ class PpgFilter {
         sample,
         selectedChannel!,
       );
+      selectedOpticalSignal *= -1;
       if (!selectedOpticalSignal.isFinite) {
         selectedOpticalSignal = lastFiniteSample;
       } else {
@@ -427,10 +437,13 @@ class PpgFilter {
       return (heartRateBpm: null, peakTimestamps: peaks);
     }
 
-    intervalsSeconds.sort();
-    final medianIntervalSeconds =
-        intervalsSeconds[intervalsSeconds.length ~/ 2];
-    final heartRate = 60.0 / medianIntervalSeconds;
+    //intervalsSeconds.sort();
+    //final medianIntervalSeconds =
+    //intervalsSeconds[intervalsSeconds.length ~/ 2];
+    final latestIntervalSeconds = intervalsSeconds.last;
+
+    //final heartRate = 60.0 / medianIntervalSeconds;
+    final heartRate = 60.0 / latestIntervalSeconds;
     if (!heartRate.isFinite || heartRate < 30 || heartRate > 240) {
       return (heartRateBpm: null, peakTimestamps: peaks);
     }
@@ -627,7 +640,7 @@ class PpgFilter {
       lastEvaluationTick = sample.timestamp.toDouble();
 
       //debugPrint('rawRed: ${sample.rawRed}, rawIr: ${sample.rawIr}');
-      if (sample.rawRed >= 9.5e6 && sample.rawIr >= 9.5e6) {
+      if (sample.rawIr >= 9.3e6 || (sample.rawRed - sample.rawIr).abs() > 1e5) {
         yield const PpgVitals.invalid(
             signalQuality: PpgSignalQuality.unavailable);
         continue;
@@ -701,6 +714,7 @@ class PpgFilter {
           ibiTicks.add(interval);
         }
       }
+
       if (ibiTicks.length >= 2) {
         final robustIbiTicks = _removeIbiOutliers(ibiTicks);
         final meanIbiTicks =
@@ -789,6 +803,7 @@ class PpgFilter {
       //final smoothedHeartRate = peakHeartRate;
 
       double? smoothedHrvMs;
+      double? lfhfRatio;
       if (ibiTicks.length >= 2) {
         final robustIbiTicks = _removeIbiOutliers(ibiTicks);
         final rmssdTicks = _computeRmssd(robustIbiTicks);
@@ -798,11 +813,21 @@ class PpgFilter {
             smoothedHrvMs = _smoothHrv(hrvMs);
           }
         }
+
+        final ibiMsList =
+            robustIbiTicks.map((e) => e * ticksToMilliseconds).toList();
+
+        for (final ibiMs in ibiMsList) {
+          _hrvLfhfCalculator.addIbi(ibiMs);
+        }
+
+        lfhfRatio = _hrvLfhfCalculator.computeLfhfRatio();
       }
 
       yield PpgVitals(
         heartRateBpm: smoothedHeartRate,
         hrvRmssdMs: smoothedHrvMs,
+        hrvLfhfRatio: lfhfRatio,
         signalQuality: classifiedQuality,
       );
 
