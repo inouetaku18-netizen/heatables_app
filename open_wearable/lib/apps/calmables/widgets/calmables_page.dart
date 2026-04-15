@@ -10,6 +10,7 @@ import 'package:flutter_platform_widgets/flutter_platform_widgets.dart';
 import 'package:open_wearable/apps/calmables/model/ppg_filter.dart';
 import 'package:open_wearable/apps/calmables/model/calmables_pwm.dart';
 import 'package:open_wearable/apps/calmables/model/sensor_data_logger.dart';
+import 'package:open_wearable/apps/calmables/model/hr_calibration.dart';
 import 'package:open_wearable/apps/calmables/widgets/rowling_chart.dart';
 import 'package:open_wearable/apps/calmables/widgets/autopilot_page.dart';
 import 'package:open_wearable/models/wearable_display_group.dart';
@@ -54,6 +55,8 @@ class _CalmablesPageState extends State<CalmablesPage> {
   StreamSubscription<double?>? _heartRateSubscription;
 
   final SensorDataLogger _dataLogger = SensorDataLogger();
+  final HrCalibration _calibration = HrCalibration();
+  Timer? _calibrationUiTimer;
   Stream<PpgOpticalSample>? _rawPpgStream;
   Stream<PpgMotionSample>? _rawImuStream;
 
@@ -101,6 +104,8 @@ class _CalmablesPageState extends State<CalmablesPage> {
     if (_dataLogger.isLogging) {
       _dataLogger.stop();
     }
+    _calibration.stop();
+    _calibrationUiTimer?.cancel();
     if (configProvider != null) {
       unawaited(configProvider.turnOffAllSensors());
     }
@@ -601,6 +606,131 @@ class _CalmablesPageState extends State<CalmablesPage> {
     );
   }
 
+  Widget _buildCalibrationCard(BuildContext context) {
+    final result = _calibration.latestResult;
+    final isCalibrating = _calibration.isCalibrating;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.tune_rounded,
+                  size: 18,
+                  color: isCalibrating
+                      ? Colors.orange
+                      : const Color(0xFF009682),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  'HR Calibration',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (isCalibrating) ...[
+              LinearProgressIndicator(
+                value: _calibration.progressFraction,
+                backgroundColor: Colors.grey.shade200,
+                valueColor: const AlwaysStoppedAnimation<Color>(
+                  Color(0xFF009682),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '${_calibration.elapsedSeconds.toStringAsFixed(0)}s / '
+                '${HrCalibration.calibrationDuration.inSeconds}s',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 8),
+            ],
+            Row(
+              children: [
+                Expanded(
+                  child: _MetricCard(
+                    title: 'Baseline',
+                    icon: Icons.horizontal_rule_rounded,
+                    value: result != null
+                        ? result.baselineHeartRate.toStringAsFixed(1)
+                        : '-',
+                    unit: 'BPM',
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _MetricCard(
+                    title: 'Trigger',
+                    icon: Icons.arrow_upward_rounded,
+                    value: result != null
+                        ? result.triggerThreshold.toStringAsFixed(1)
+                        : '-',
+                    unit: 'BPM',
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: isCalibrating
+                    ? () {
+                        _calibration.stop();
+                        _calibrationUiTimer?.cancel();
+                        _calibrationUiTimer = null;
+                        setState(() {});
+                      }
+                    : () {
+                        final hrStream = _heartRateStream;
+                        final qualityStream = _signalQualityStream;
+                        if (hrStream == null || qualityStream == null) return;
+                        _calibration.onResultUpdated = (_) {
+                          if (mounted) setState(() {});
+                        };
+                        _calibration.onCalibrationFinished = () {
+                          _calibrationUiTimer?.cancel();
+                          _calibrationUiTimer = null;
+                          if (mounted) setState(() {});
+                        };
+                        _calibration.start(
+                          heartRateStream: hrStream,
+                          signalQualityStream: qualityStream,
+                        );
+                        _calibrationUiTimer?.cancel();
+                        _calibrationUiTimer = Timer.periodic(
+                          const Duration(seconds: 1),
+                          (_) {
+                            if (mounted) setState(() {});
+                          },
+                        );
+                        setState(() {});
+                      },
+                icon: Icon(
+                  isCalibrating ? Icons.stop : Icons.play_arrow,
+                  size: 16,
+                ),
+                label: Text(isCalibrating ? 'Stop' : 'Calibrate'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: isCalibrating
+                      ? Colors.orange
+                      : const Color(0xFF009682),
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final displayPpgSignalStream = _displayPpgSignalStream;
@@ -759,6 +889,8 @@ class _CalmablesPageState extends State<CalmablesPage> {
         //_buildScanSection(),
         const SizedBox(height: 12),
         _buildLoggingCard(context),
+        const SizedBox(height: 12),
+        _buildCalibrationCard(context),
         const SizedBox(height: 24), // 少し余白
         Card(
           child: Padding(
