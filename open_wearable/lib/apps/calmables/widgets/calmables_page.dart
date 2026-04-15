@@ -705,7 +705,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
                         );
                         _calibrationUiTimer?.cancel();
                         _calibrationUiTimer = Timer.periodic(
-                          const Duration(seconds: 1),
+                          const Duration(milliseconds: 500),
                           (_) {
                             if (mounted) setState(() {});
                           },

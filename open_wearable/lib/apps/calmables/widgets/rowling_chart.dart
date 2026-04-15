@@ -1,12 +1,10 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:community_charts_flutter/community_charts_flutter.dart'
-    as charts;
 
 class RollingChart extends StatefulWidget {
   final Stream<(int, double)> dataSteam;
-  final int timestampExponent; // e.g., 6 for microseconds to milliseconds
+  final int timestampExponent;
   final int timeWindow; // in seconds
   final bool showXAxis;
   final bool showYAxis;
@@ -29,15 +27,31 @@ class RollingChart extends StatefulWidget {
 }
 
 class _RollingChartState extends State<RollingChart> {
-  List<charts.Series<_ChartPoint, num>> _seriesList = [];
   final List<_RawChartPoint> _rawData = [];
-  List<_ChartPoint> _normalizedData = [];
   StreamSubscription? _subscription;
+  Timer? _refreshTimer;
+  bool _dirty = false;
+
+  // Pre-computed paint data for the CustomPainter.
+  List<Offset>? _normalizedPoints;
+  double _xMin = 0;
+  double _xMax = 5;
+  double _yMin = -1;
+  double _yMax = 1;
+
+  static const _refreshInterval = Duration(milliseconds: 20); // ~50 fps
 
   @override
   void initState() {
     super.initState();
     _listenToStream();
+    _refreshTimer = Timer.periodic(_refreshInterval, (_) {
+      if (_dirty && mounted) {
+        _dirty = false;
+        _rebuildPaintData();
+        setState(() {});
+      }
+    });
   }
 
   @override
@@ -52,66 +66,70 @@ class _RollingChartState extends State<RollingChart> {
   void _listenToStream() {
     _subscription = widget.dataSteam.listen((event) {
       final (timestamp, value) = event;
-      if (!value.isFinite) {
-        return;
+      if (!value.isFinite) return;
+
+      _rawData.add(_RawChartPoint(timestamp, value));
+
+      final ticksPerSecond = pow(10, -widget.timestampExponent).toDouble();
+      final cutoffTime =
+          timestamp - (widget.timeWindow * ticksPerSecond).round();
+      while (_rawData.isNotEmpty && _rawData.first.timestamp < cutoffTime) {
+        _rawData.removeAt(0);
       }
 
-      setState(() {
-        _rawData.add(_RawChartPoint(timestamp, value));
-
-        // Remove old data outside time window
-        final ticksPerSecond = pow(10, -widget.timestampExponent).toDouble();
-        final cutoffTime =
-            timestamp - (widget.timeWindow * ticksPerSecond).round();
-        _rawData.removeWhere((data) => data.timestamp < cutoffTime);
-
-        _updateSeries();
-      });
+      _dirty = true;
     });
   }
 
-  void _updateSeries() {
-    if (_rawData.isEmpty) {
-      _normalizedData = [];
-      _seriesList = [];
+  void _rebuildPaintData() {
+    if (_rawData.length < 2) {
+      _normalizedPoints = null;
       return;
     }
 
-    final finiteRawData = _rawData
-        .where((point) => point.value.isFinite)
-        .toList(growable: false);
-    if (finiteRawData.length < 2) {
-      _normalizedData = [];
-      _seriesList = [];
-      return;
-    }
-
-    final firstTimestamp = finiteRawData.first.timestamp;
+    final firstTimestamp = _rawData.first.timestamp;
     final secondsPerTick = pow(10, widget.timestampExponent).toDouble();
 
-    _normalizedData = finiteRawData
-        .map(
-          (point) => _ChartPoint(
-            (point.timestamp - firstTimestamp) * secondsPerTick,
-            point.value,
-          ),
-        )
-        .toList(growable: false);
+    var yMinData = double.infinity;
+    var yMaxData = double.negativeInfinity;
+    final points = <Offset>[];
 
-    _seriesList = [
-      charts.Series<_ChartPoint, num>(
-        id: 'Live Data',
-        colorFn: (_, __) => charts.MaterialPalette.red.shadeDefault,
-        domainFn: (_ChartPoint point, _) => point.timeSeconds,
-        measureFn: (_ChartPoint point, _) => point.value,
-        data: _normalizedData,
-      ),
-    ];
+    for (final p in _rawData) {
+      if (!p.value.isFinite) continue;
+      final t = (p.timestamp - firstTimestamp) * secondsPerTick;
+      points.add(Offset(t, p.value));
+      if (p.value < yMinData) yMinData = p.value;
+      if (p.value > yMaxData) yMaxData = p.value;
+    }
+
+    if (points.length < 2) {
+      _normalizedPoints = null;
+      return;
+    }
+
+    _xMin = 0;
+    _xMax = max(
+      widget.timeWindow.toDouble(),
+      points.last.dx,
+    );
+
+    var yMin = widget.fixedMeasureMin ?? yMinData;
+    var yMax = widget.fixedMeasureMax ?? yMaxData;
+    if (yMin >= yMax) {
+      final center = yMin;
+      final pad = max(center.abs() * 0.05, 1.0);
+      yMin = center - pad;
+      yMax = center + pad;
+    }
+    _yMin = yMin;
+    _yMax = yMax;
+    _normalizedPoints = points;
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_seriesList.isEmpty || _normalizedData.length < 2) {
+    final points = _normalizedPoints;
+    if (points == null || points.length < 2) {
       return Center(
         child: Text(
           'Waiting for signal...',
@@ -122,61 +140,145 @@ class _RollingChartState extends State<RollingChart> {
       );
     }
 
-    final filteredPoints = _normalizedData;
-
-    final xValues = filteredPoints.map((e) => e.timeSeconds).toList();
-    final yValues = filteredPoints.map((e) => e.value).toList();
-
-    final double xMin = 0;
-    final double xMax = max(
-      widget.timeWindow.toDouble(),
-      xValues.isNotEmpty ? xValues.reduce((a, b) => a > b ? a : b) : 0,
-    );
-
-    final double? dynamicYMin =
-        yValues.isNotEmpty ? yValues.reduce((a, b) => a < b ? a : b) : null;
-    final double? dynamicYMax =
-        yValues.isNotEmpty ? yValues.reduce((a, b) => a > b ? a : b) : null;
-    var yMin = widget.fixedMeasureMin ?? dynamicYMin;
-    var yMax = widget.fixedMeasureMax ?? dynamicYMax;
-    if (yMin != null && yMax != null && yMin >= yMax) {
-      final center = yMin;
-      final pad = max(center.abs() * 0.05, 1.0);
-      yMin = center - pad;
-      yMax = center + pad;
-    }
-
-    return charts.LineChart(
-      _seriesList,
-      animate: false,
-      defaultInteractions: false,
-      behaviors: const [],
-      domainAxis: charts.NumericAxisSpec(
-        viewport: charts.NumericExtents(xMin, xMax),
-        renderSpec: widget.showXAxis ? null : const charts.NoneRenderSpec(),
-        tickFormatterSpec: charts.BasicNumericTickFormatterSpec((num? value) {
-          if (value == null) return '';
-          final rounded = value.roundToDouble();
-          if ((value - rounded).abs() < 0.05) {
-            return '${rounded.toInt()}s';
-          }
-          return '${value.toStringAsFixed(1)}s';
-        }),
-      ),
-      primaryMeasureAxis: charts.NumericAxisSpec(
-        viewport: yMin != null && yMax != null
-            ? charts.NumericExtents(yMin, yMax)
-            : null,
-        renderSpec: widget.showYAxis ? null : const charts.NoneRenderSpec(),
+    return RepaintBoundary(
+      child: CustomPaint(
+        painter: _RollingChartPainter(
+          points: points,
+          xMin: _xMin,
+          xMax: _xMax,
+          yMin: _yMin,
+          yMax: _yMax,
+          lineColor: const Color(0xFFE53935),
+          showXAxis: widget.showXAxis,
+          showYAxis: widget.showYAxis,
+        ),
+        size: Size.infinite,
       ),
     );
   }
 
   @override
   void dispose() {
+    _refreshTimer?.cancel();
     _subscription?.cancel();
     super.dispose();
   }
+}
+
+class _RollingChartPainter extends CustomPainter {
+  final List<Offset> points;
+  final double xMin;
+  final double xMax;
+  final double yMin;
+  final double yMax;
+  final Color lineColor;
+  final bool showXAxis;
+  final bool showYAxis;
+
+  _RollingChartPainter({
+    required this.points,
+    required this.xMin,
+    required this.xMax,
+    required this.yMin,
+    required this.yMax,
+    required this.lineColor,
+    required this.showXAxis,
+    required this.showYAxis,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (points.length < 2 || size.isEmpty) return;
+
+    final xRange = xMax - xMin;
+    final yRange = yMax - yMin;
+    if (xRange <= 0 || yRange <= 0) return;
+
+    // Chart area with optional margins for axes.
+    final leftMargin = showYAxis ? 32.0 : 0.0;
+    final bottomMargin = showXAxis ? 20.0 : 0.0;
+    final chartWidth = size.width - leftMargin;
+    final chartHeight = size.height - bottomMargin;
+    if (chartWidth <= 0 || chartHeight <= 0) return;
+
+    double toX(double t) => leftMargin + ((t - xMin) / xRange) * chartWidth;
+    double toY(double v) => chartHeight - ((v - yMin) / yRange) * chartHeight;
+
+    // Draw grid lines.
+    final gridPaint = Paint()
+      ..color = Colors.grey.withValues(alpha: 0.18)
+      ..strokeWidth = 0.5;
+
+    if (showXAxis) {
+      final tickStep = _niceStep(xRange, 5);
+      final axisStyle = TextStyle(color: Colors.grey.shade600, fontSize: 9);
+      var tx = (xMin / tickStep).ceilToDouble() * tickStep;
+      while (tx <= xMax) {
+        final px = toX(tx);
+        canvas.drawLine(Offset(px, 0), Offset(px, chartHeight), gridPaint);
+        final tp = TextPainter(
+          text: TextSpan(text: '${tx.toInt()}s', style: axisStyle),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        tp.paint(canvas, Offset(px - tp.width / 2, chartHeight + 3));
+        tx += tickStep;
+      }
+    }
+
+    if (showYAxis) {
+      final tickStep = _niceStep(yRange, 4);
+      final axisStyle = TextStyle(color: Colors.grey.shade600, fontSize: 9);
+      var ty = (yMin / tickStep).ceilToDouble() * tickStep;
+      while (ty <= yMax) {
+        final py = toY(ty);
+        canvas.drawLine(Offset(leftMargin, py), Offset(size.width, py), gridPaint);
+        final label = ty.abs() < 1
+            ? ty.toStringAsFixed(2)
+            : ty.toStringAsFixed(1);
+        final tp = TextPainter(
+          text: TextSpan(text: label, style: axisStyle),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        tp.paint(canvas, Offset(leftMargin - tp.width - 3, py - tp.height / 2));
+        ty += tickStep;
+      }
+    }
+
+    // Draw the signal line.
+    final linePaint = Paint()
+      ..color = lineColor
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke
+      ..strokeJoin = StrokeJoin.round
+      ..isAntiAlias = true;
+
+    final path = Path();
+    var first = true;
+    for (final p in points) {
+      final px = toX(p.dx);
+      final py = toY(p.dy).clamp(0.0, chartHeight);
+      if (first) {
+        path.moveTo(px, py);
+        first = false;
+      } else {
+        path.lineTo(px, py);
+      }
+    }
+    canvas.drawPath(path, linePaint);
+  }
+
+  double _niceStep(double range, int targetTicks) {
+    final rough = range / targetTicks;
+    final magnitude = pow(10, (log(rough) / ln10).floorToDouble()).toDouble();
+    final residual = rough / magnitude;
+    if (residual <= 1.5) return magnitude;
+    if (residual <= 3.5) return magnitude * 2;
+    if (residual <= 7.5) return magnitude * 5;
+    return magnitude * 10;
+  }
+
+  @override
+  bool shouldRepaint(covariant _RollingChartPainter oldDelegate) => true;
 }
 
 class _RawChartPoint {
@@ -184,11 +286,4 @@ class _RawChartPoint {
   final double value;
 
   _RawChartPoint(this.timestamp, this.value);
-}
-
-class _ChartPoint {
-  final double timeSeconds;
-  final double value;
-
-  _ChartPoint(this.timeSeconds, this.value);
 }

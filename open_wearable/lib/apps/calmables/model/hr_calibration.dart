@@ -102,13 +102,15 @@ class HrCalibration {
     _qualitySubscription = null;
   }
 
+  static const Duration _windowStep = Duration(seconds: 5);
+
   void _evaluate() {
     final now = DateTime.now();
     final start = _startTime!;
 
     CalibrationResult? bestResult;
 
-    // Slide through completed 30s windows from the start.
+    // Slide through completed 30s windows with 5s step for responsive updates.
     var windowStart = start;
     while (windowStart.add(windowDuration).isBefore(now) ||
         windowStart.add(windowDuration).isAtSameMomentAs(now)) {
@@ -129,10 +131,19 @@ class HrCalibration {
         }
       }
 
-      windowStart = windowStart.add(windowDuration);
+      windowStart = windowStart.add(_windowStep);
     }
 
-    if (bestResult != _latestResult) {
+    final changed = bestResult == null
+        ? _latestResult != null
+        : _latestResult == null ||
+            (bestResult.baselineHeartRate - _latestResult!.baselineHeartRate)
+                    .abs() >
+                0.05 ||
+            (bestResult.triggerThreshold - _latestResult!.triggerThreshold)
+                    .abs() >
+                0.05;
+    if (changed) {
       _latestResult = bestResult;
       onResultUpdated?.call(bestResult);
     }
