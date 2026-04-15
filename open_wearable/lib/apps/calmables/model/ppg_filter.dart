@@ -5,9 +5,9 @@ import 'dart:collection';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 
-import 'package:open_wearable/apps/heatables/model/band_pass_filter.dart';
-import 'package:open_wearable/apps/heatables/model/high_pass_filter.dart';
-import 'package:open_wearable/apps/heatables/model/hrv_lfhf.dart';
+import 'package:open_wearable/apps/calmables/model/band_pass_filter.dart';
+import 'package:open_wearable/apps/calmables/model/high_pass_filter.dart';
+import 'package:open_wearable/apps/calmables/model/hrv_lfhf.dart';
 
 enum PpgSignalQuality {
   unavailable,

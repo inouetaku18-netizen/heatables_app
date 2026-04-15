@@ -4,7 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:open_earable_flutter/open_earable_flutter.dart';
 import 'package:open_wearable/apps/audio_response_measure/audio_response_measurement_view.dart';
 import 'package:open_wearable/apps/heart_tracker/widgets/heart_tracker_page.dart';
-import 'package:open_wearable/apps/heatables/widgets/heatables_page.dart'; //追加
+import 'package:open_wearable/apps/calmables/widgets/calmables_page.dart'; //追加
 import 'package:open_wearable/apps/posture_tracker/model/earable_attitude_tracker.dart';
 import 'package:open_wearable/apps/models/sensor_matching.dart';
 import 'package:open_wearable/apps/posture_tracker/view/posture_tracker_view.dart';
@@ -64,17 +64,17 @@ final List<AppSupportOption> _audioResponseSupportedDevices = [
   ),
 ];
 
-final List<AppSupportOption> _heatablesSupportedDevices = [
+final List<AppSupportOption> _calmablesSupportedDevices = [
   AppSupportOption(
     label: "SmartRing",
     requirement: AppRequirement.hasSensorByAliases(ppgSensorAliases),
   ),
   AppSupportOption(
-    label: "Heatables",
+    label: "Calmables",
     requirement: AppRequirement.custom(
       (wearable) {
         final name = wearable.name;
-        return name.contains("Heatables");
+        return name.contains("Calmables");
       },
     ),
   ),
@@ -215,13 +215,13 @@ final List<AppInfo> _apps = [
     ),
   ),
   AppInfo(
-    logoPath: "lib/apps/heatables/assets/logo.png",
-    title: "Heatables",
+    logoPath: "lib/apps/calmables/assets/logo.png",
+    title: "Calmables",
     description: "Thermal stimulation based on HRV and temperature",
-    supportedDevices: _heatablesSupportedDevices,
+    supportedDevices: _calmablesSupportedDevices,
     accentColor: _appAccentColor,
     widget: SelectEarableView(
-      supportedDevices: _heatablesSupportedDevices,
+      supportedDevices: _calmablesSupportedDevices,
       connectedDevices: connectedDevices,
       startApp: (wearable, _, connectedDevices) async {
         debugPrint('Wearable Name: ${wearable.name}');
@@ -244,7 +244,7 @@ final List<AppInfo> _apps = [
 
           if (ppgSensor == null) {
             return PlatformScaffold(
-              appBar: PlatformAppBar(title: PlatformText('Heatables Demo')),
+              appBar: PlatformAppBar(title: PlatformText('Calmables Demo')),
               body: Center(
                 child: PlatformText('No PPG sensor found on this wearable'),
               ),
@@ -257,7 +257,7 @@ final List<AppInfo> _apps = [
             sensors,
           );
 
-          return HeatablesPage(
+          return CalmablesPage(
             wearable: wearable,
             ppgSensor: ppgSensor,
             opticalTemperatureSensor: opticalTemperatureSensor,
@@ -266,7 +266,7 @@ final List<AppInfo> _apps = [
           );
         }
         return PlatformScaffold(
-          appBar: PlatformAppBar(title: PlatformText("Heatables Demo")),
+          appBar: PlatformAppBar(title: PlatformText("Calmables Demo")),
           body: Center(child: PlatformText("No PPG Sensor Found")),
         );
       },

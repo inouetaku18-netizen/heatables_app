@@ -7,23 +7,23 @@ import 'package:open_earable_flutter/open_earable_flutter.dart';
 //import 'package:universal_ble/universal_ble.dart';
 
 import 'package:flutter_platform_widgets/flutter_platform_widgets.dart';
-import 'package:open_wearable/apps/heatables/model/ppg_filter.dart';
-import 'package:open_wearable/apps/heatables/model/heatables_pwm.dart';
-import 'package:open_wearable/apps/heatables/widgets/rowling_chart.dart';
-import 'package:open_wearable/apps/heatables/widgets/autopilot_page.dart';
+import 'package:open_wearable/apps/calmables/model/ppg_filter.dart';
+import 'package:open_wearable/apps/calmables/model/calmables_pwm.dart';
+import 'package:open_wearable/apps/calmables/widgets/rowling_chart.dart';
+import 'package:open_wearable/apps/calmables/widgets/autopilot_page.dart';
 import 'package:open_wearable/models/wearable_display_group.dart';
 import 'package:open_wearable/view_models/sensor_configuration_provider.dart';
 import 'package:open_wearable/widgets/devices/devices_page.dart';
 import 'package:provider/provider.dart';
 
-class HeatablesPage extends StatefulWidget {
+class CalmablesPage extends StatefulWidget {
   final Wearable wearable;
   final Sensor ppgSensor;
   final Sensor? opticalTemperatureSensor;
   final Sensor? accelerometerSensor;
   final List<Wearable> connectedDevices;
 
-  const HeatablesPage({
+  const CalmablesPage({
     super.key,
     required this.wearable,
     required this.ppgSensor,
@@ -33,12 +33,12 @@ class HeatablesPage extends StatefulWidget {
   });
 
   @override
-  State<HeatablesPage> createState() => _HeatablesPageState();
+  State<CalmablesPage> createState() => _CalmablesPageState();
 }
 
 enum ControlMode { manual, autopilot }
 
-class _HeatablesPageState extends State<HeatablesPage> {
+class _CalmablesPageState extends State<CalmablesPage> {
   PpgFilter? _ppgFilter;
   Stream<(int, double)>? _displayPpgSignalStream;
   Stream<double?>? _heartRateStream;
@@ -52,10 +52,13 @@ class _HeatablesPageState extends State<HeatablesPage> {
   ControlMode _controlMode = ControlMode.manual;
   StreamSubscription<double?>? _heartRateSubscription;
 
-  late Wearable heatablesDevice;
+  late Wearable calmablesDevice;
 
-  // ESP32(Heatables)用スライダー値（0-255）
-  int heatablesSliderValue = 0;
+  // ESP32(Calmables)用スライダー値（0-255）
+  int calmablesSliderValue = 0;
+
+  double BoxWidth = 186;
+  double BoxHeight = 90;
 
   final String _characteristicUuid = "6bb7da44-e8b9-3e3f-6d5a-e212c378d2df";
   final String _serviceUuid = "a542957a-968b-91fa-254c-62c7a367a692";
@@ -73,8 +76,8 @@ class _HeatablesPageState extends State<HeatablesPage> {
         return;
       }
 
-      heatablesDevice = widget.connectedDevices.firstWhere(
-        (device) => device.name.toLowerCase().contains('heatables'),
+      calmablesDevice = widget.connectedDevices.firstWhere(
+        (device) => device.name.toLowerCase().contains('calmables'),
       );
 
       _initializePipeline();
@@ -98,10 +101,10 @@ class _HeatablesPageState extends State<HeatablesPage> {
     if (_controlMode == mode) return;
     setState(() {
       _controlMode = mode;
-      heatablesSliderValue = 0;
+      calmablesSliderValue = 0;
       pwmHistory.clear();
     });
-    sendDataToHeatables([0]);
+    sendDataToCalmables([0]);
 
     if (mode == ControlMode.autopilot) {
       // Autopilot画面へ遷移
@@ -109,7 +112,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
         MaterialPageRoute(
           builder: (context) => AutopilotPage(
             heartRateStream: _heartRateStream,
-            initialPwmValue: heatablesSliderValue,
+            initialPwmValue: calmablesSliderValue,
           ),
         ),
       );
@@ -117,9 +120,9 @@ class _HeatablesPageState extends State<HeatablesPage> {
       _heartRateSubscription = _heartRateStream?.listen((bpm) {
         if (bpm != null && bpm.isFinite) {
           final pwmValue = AutopilotController.pwmFromHeartRate(bpm);
-          sendDataToHeatables([pwmValue]);
+          sendDataToCalmables([pwmValue]);
           setState(() {
-            heatablesSliderValue = pwmValue;
+            calmablesSliderValue = pwmValue;
             pwmHistory.add(pwmValue);
             if (pwmHistory.length > pwmHistoryLength) {
               pwmHistory.removeAt(0);
@@ -138,10 +141,10 @@ class _HeatablesPageState extends State<HeatablesPage> {
   List<int> pwmHistory = [];
   static const int pwmHistoryLength = 50; // 表示用に長めに保持
 
-  Future<void> sendDataToHeatables(List<int> data) async {
+  Future<void> sendDataToCalmables(List<int> data) async {
     try {
-      final writeManager = heatablesDevice.getCapability<BleGattManager>();
-      final deviceId = heatablesDevice.deviceId;
+      final writeManager = calmablesDevice.getCapability<BleGattManager>();
+      final deviceId = calmablesDevice.deviceId;
 
       final serviceUuid = _serviceUuid.toLowerCase();
       final characteristicUuid = _characteristicUuid.toLowerCase();
@@ -164,7 +167,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
         }
       }
     } catch (e) {
-      debugPrint('Error in sendDataToHeatables: $e');
+      debugPrint('Error in sendDataToCalmables: $e');
     }
   }
 
@@ -500,7 +503,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
 
     return PlatformScaffold(
       appBar: PlatformAppBar(
-        title: PlatformText('Heatables Demo'),
+        title: PlatformText('Calmables Demo'),
       ),
       body: displayPpgSignalStream == null ||
               heartRateStream == null ||
@@ -553,7 +556,9 @@ class _HeatablesPageState extends State<HeatablesPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     // 体温表示（既存の_MetricCardを利用）
-                    Expanded(
+                    SizedBox(
+                      width: BoxWidth,
+                      height: BoxHeight,
                       child: _MetricCard(
                         title: 'Equipment',
                         icon: Icons.power_settings_new_rounded,
@@ -564,7 +569,8 @@ class _HeatablesPageState extends State<HeatablesPage> {
                     const SizedBox(width: 12),
                     // 信号品質表示に_SignalQualityCardを利用
                     SizedBox(
-                      width: 225, // 適宜調整してください
+                      width: BoxWidth,
+                      height: BoxHeight,
                       child: _SignalQualityCard(quality: quality),
                     ),
                   ],
@@ -601,7 +607,9 @@ class _HeatablesPageState extends State<HeatablesPage> {
 
                 return Row(
                   children: [
-                    Expanded(
+                    SizedBox(
+                      width: BoxWidth,
+                      height: BoxHeight,
                       child: _MetricCard(
                         title: 'Heart Rate',
                         icon: Icons.favorite_rounded,
@@ -612,7 +620,9 @@ class _HeatablesPageState extends State<HeatablesPage> {
                       ),
                     ),
                     const SizedBox(width: 12),
-                    Expanded(
+                    SizedBox(
+                      width: BoxWidth,
+                      height: BoxHeight,
                       child: _MetricCard(
                         title: 'LF/HF Ratio',
                         icon: Icons.bar_chart_rounded,
@@ -629,9 +639,8 @@ class _HeatablesPageState extends State<HeatablesPage> {
         ),
         const SizedBox(height: 12),
         _SignalPanelCard(
-          title: 'Filtered PPG',
-          subtitle: 'Live PPG with a basic pulse-band band-pass filter '
-              '(0.5-3.2 Hz).',
+          title: 'Filtered PPG (0.5-3.2 Hz)',
+          subtitle: '',
           icon: Icons.show_chart_rounded,
           chartStream: displayPpgSignalStream,
           timestampExponent: widget.ppgSensor.timestampExponent,
@@ -647,7 +656,7 @@ class _HeatablesPageState extends State<HeatablesPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Heatables Control',
+                  'Calmables Control',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.bold,
                       ),
@@ -659,8 +668,11 @@ class _HeatablesPageState extends State<HeatablesPage> {
                         onPressed: () => _onModeChanged(ControlMode.manual),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: _controlMode == ControlMode.manual
-                              ? Theme.of(context).colorScheme.primary
-                              : null,
+                              ? Color(0xFF009682)
+                              : Colors.grey.shade300,
+                          foregroundColor: _controlMode == ControlMode.manual
+                              ? Colors.white
+                              : Colors.black87,
                         ),
                         child: const Text('Manual'),
                       ),
@@ -671,10 +683,13 @@ class _HeatablesPageState extends State<HeatablesPage> {
                         onPressed: () => _onModeChanged(ControlMode.autopilot),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: _controlMode == ControlMode.autopilot
-                              ? Theme.of(context).colorScheme.primary
-                              : null,
+                              ? Color(0xFF009682)
+                              : Colors.grey.shade300,
+                          foregroundColor: _controlMode == ControlMode.autopilot
+                              ? Colors.white
+                              : Colors.black87,
                         ),
-                        child: const Text('Autopilot'),
+                        child: const Text('HR-based'),
                       ),
                     ),
                   ],
@@ -682,22 +697,24 @@ class _HeatablesPageState extends State<HeatablesPage> {
                 const SizedBox(height: 12),
                 if (_controlMode == ControlMode.manual) ...[
                   Slider(
-                    value: heatablesSliderValue.toDouble(),
+                    value: calmablesSliderValue.toDouble(),
                     min: 0,
                     max: 255,
                     divisions: 255,
-                    label: heatablesSliderValue.toString(),
+                    label: calmablesSliderValue.toString(),
+                    activeColor: const Color.fromARGB(255, 0, 150, 130),
+                    thumbColor: const Color.fromARGB(255, 0, 150, 130),
                     onChanged: (double value) {
                       setState(() {
-                        heatablesSliderValue = value.round();
+                        calmablesSliderValue = value.round();
                       });
-                      sendDataToHeatables([heatablesSliderValue]);
+                      sendDataToCalmables([calmablesSliderValue]);
                     },
                   ),
-                  Text('Value: $heatablesSliderValue'),
+                  Text('Value: $calmablesSliderValue'),
                 ] else ...[
                   Text('Autopilot mode active. PWM controlled by heart rate.'),
-                  Text('Current PWM: $heatablesSliderValue'),
+                  Text('Current PWM: $calmablesSliderValue'),
                 ],
               ],
             ),
@@ -734,7 +751,7 @@ class _MetricCard extends StatelessWidget {
                 Icon(
                   icon,
                   size: 18,
-                  color: Theme.of(context).colorScheme.primary,
+                  color: Color(0xFF009682),
                 ),
                 const SizedBox(width: 6),
                 Text(
@@ -761,7 +778,7 @@ class _MetricCard extends StatelessWidget {
                   child: Text(
                     unit,
                     style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          color: Colors.black,
                         ),
                   ),
                 ),
@@ -806,7 +823,7 @@ class _SignalPanelCard extends StatelessWidget {
                 Icon(
                   icon,
                   size: 18,
-                  color: Theme.of(context).colorScheme.primary,
+                  color: Color(0xFF009682),
                 ),
                 const SizedBox(width: 6),
                 Text(
@@ -821,7 +838,7 @@ class _SignalPanelCard extends StatelessWidget {
             Text(
               subtitle,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    color: Color(0xFF009682),
                   ),
             ),
             const SizedBox(height: 10),
@@ -873,7 +890,7 @@ class _SignalQualityCard extends StatelessWidget {
                     ),
                     const SizedBox(width: 6),
                     Text(
-                      'PPG Signal',
+                      'PPG',
                       style: Theme.of(context).textTheme.titleSmall?.copyWith(
                             fontWeight: FontWeight.w700,
                           ),
@@ -917,7 +934,7 @@ class _SignalQualityCard extends StatelessWidget {
       case PpgSignalQuality.unavailable:
         return (
           'Unavailable',
-          'No stable heartbeat waveform yet.',
+          'No stable heartbeat.',
           Icons.portable_wifi_off_rounded,
           colors.onSurfaceVariant,
         );
@@ -931,7 +948,7 @@ class _SignalQualityCard extends StatelessWidget {
       case PpgSignalQuality.fair:
         return (
           'Fair',
-          'Heartbeat is partially visible.',
+          'Heartbeat is visible.',
           Icons.network_check_rounded,
           Colors.orange.shade700,
         );
@@ -940,7 +957,7 @@ class _SignalQualityCard extends StatelessWidget {
           'Good',
           'Signal quality is good.',
           Icons.check_circle_rounded,
-          Colors.green.shade700,
+          Color(0xFF8CB63C),
         );
     }
   }

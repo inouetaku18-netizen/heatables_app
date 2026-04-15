@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
-import 'package:open_wearable/apps/heatables/model/heatables_pwm.dart';
+import 'package:open_wearable/apps/calmables/model/calmables_pwm.dart';
 
 class AutopilotPage extends StatefulWidget {
   final Stream<double?>? heartRateStream;
@@ -132,7 +132,7 @@ class _AutopilotPageState extends State<AutopilotPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Autopilot Mode'),
+        title: const Text('HR-based Mode'),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () {
