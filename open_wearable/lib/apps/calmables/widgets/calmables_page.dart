@@ -9,6 +9,7 @@ import 'package:open_earable_flutter/open_earable_flutter.dart';
 import 'package:flutter_platform_widgets/flutter_platform_widgets.dart';
 import 'package:open_wearable/apps/calmables/model/ppg_filter.dart';
 import 'package:open_wearable/apps/calmables/model/calmables_pwm.dart';
+import 'package:open_wearable/apps/calmables/model/sensor_data_logger.dart';
 import 'package:open_wearable/apps/calmables/widgets/rowling_chart.dart';
 import 'package:open_wearable/apps/calmables/widgets/autopilot_page.dart';
 import 'package:open_wearable/models/wearable_display_group.dart';
@@ -52,6 +53,10 @@ class _CalmablesPageState extends State<CalmablesPage> {
   ControlMode _controlMode = ControlMode.manual;
   StreamSubscription<double?>? _heartRateSubscription;
 
+  final SensorDataLogger _dataLogger = SensorDataLogger();
+  Stream<PpgOpticalSample>? _rawPpgStream;
+  Stream<PpgMotionSample>? _rawImuStream;
+
   Wearable? calmablesDevice;
 
   // ESP32(Calmables)用スライダー値（0-255）
@@ -93,6 +98,9 @@ class _CalmablesPageState extends State<CalmablesPage> {
   void dispose() {
     final configProvider = _sensorConfigProvider;
     _heartRateSubscription?.cancel();
+    if (_dataLogger.isLogging) {
+      _dataLogger.stop();
+    }
     if (configProvider != null) {
       unawaited(configProvider.turnOffAllSensors());
     }
@@ -124,6 +132,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
         if (bpm != null && bpm.isFinite) {
           final pwmValue = AutopilotController.pwmFromHeartRate(bpm);
           sendDataToCalmables([pwmValue]);
+          _dataLogger.logMetrics(pwm: pwmValue);
           setState(() {
             calmablesSliderValue = pwmValue;
             pwmHistory.add(pwmValue);
@@ -290,6 +299,8 @@ class _CalmablesPageState extends State<CalmablesPage> {
       _temperatureStream = ppgFilter.temperatureStream;
       _signalQualityStream = ppgFilter.signalQualityStream;
       _ppgFilter = ppgFilter;
+      _rawPpgStream = ppgStream;
+      _rawImuStream = accelerometerMotionStream;
     });
   }
 
@@ -500,6 +511,96 @@ class _CalmablesPageState extends State<CalmablesPage> {
     );
   }
 
+  Widget _buildLoggingCard(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.save_rounded,
+                  size: 18,
+                  color: _dataLogger.isLogging
+                      ? Colors.red
+                      : const Color(0xFF009682),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  'Data Logging',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (_dataLogger.isLogging)
+              Text(
+                'Recording… PPG: ${_dataLogger.ppgSampleCount}, '
+                'IMU: ${_dataLogger.imuSampleCount}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _dataLogger.isLogging
+                        ? null
+                        : () async {
+                            final ppgStream = _rawPpgStream;
+                            if (ppgStream == null) return;
+                            await _dataLogger.start(
+                              ppgStream: ppgStream,
+                              imuStream: _rawImuStream,
+                              heartRateStream: _heartRateStream,
+                              lfhfStream: _hrvLfhfStream,
+                            );
+                            setState(() {});
+                          },
+                    icon: const Icon(Icons.fiber_manual_record, size: 16),
+                    label: const Text('Start'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _dataLogger.isLogging
+                          ? Colors.grey.shade300
+                          : const Color(0xFF009682),
+                      foregroundColor:
+                          _dataLogger.isLogging ? Colors.black54 : Colors.white,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _dataLogger.isLogging
+                        ? () async {
+                            await _dataLogger.stopAndShare();
+                            if (mounted) setState(() {});
+                          }
+                        : null,
+                    icon: const Icon(Icons.stop, size: 16),
+                    label: const Text('Stop & Share'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _dataLogger.isLogging
+                          ? Colors.red
+                          : Colors.grey.shade300,
+                      foregroundColor: _dataLogger.isLogging
+                          ? Colors.white
+                          : Colors.black54,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final displayPpgSignalStream = _displayPpgSignalStream;
@@ -656,6 +757,8 @@ class _CalmablesPageState extends State<CalmablesPage> {
           fixedMeasureMax: null,
         ),
         //_buildScanSection(),
+        const SizedBox(height: 12),
+        _buildLoggingCard(context),
         const SizedBox(height: 24), // 少し余白
         Card(
           child: Padding(
@@ -717,6 +820,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
                         calmablesSliderValue = value.round();
                       });
                       sendDataToCalmables([calmablesSliderValue]);
+                      _dataLogger.logMetrics(pwm: calmablesSliderValue);
                     },
                   ),
                   Text('Value: $calmablesSliderValue'),
