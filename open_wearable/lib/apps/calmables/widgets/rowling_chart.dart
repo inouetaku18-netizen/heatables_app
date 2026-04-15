@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:math';
 import 'package:flutter/material.dart';
 
@@ -27,7 +28,7 @@ class RollingChart extends StatefulWidget {
 }
 
 class _RollingChartState extends State<RollingChart> {
-  final List<_RawChartPoint> _rawData = [];
+  final Queue<_RawChartPoint> _rawData = Queue();
   StreamSubscription? _subscription;
   Timer? _refreshTimer;
   bool _dirty = false;
@@ -68,13 +69,13 @@ class _RollingChartState extends State<RollingChart> {
       final (timestamp, value) = event;
       if (!value.isFinite) return;
 
-      _rawData.add(_RawChartPoint(timestamp, value));
+      _rawData.addLast(_RawChartPoint(timestamp, value));
 
       final ticksPerSecond = pow(10, -widget.timestampExponent).toDouble();
       final cutoffTime =
           timestamp - (widget.timeWindow * ticksPerSecond).round();
       while (_rawData.isNotEmpty && _rawData.first.timestamp < cutoffTime) {
-        _rawData.removeAt(0);
+        _rawData.removeFirst();
       }
 
       _dirty = true;

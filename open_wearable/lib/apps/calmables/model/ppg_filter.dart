@@ -291,15 +291,6 @@ class PpgFilter {
         imuCanceler.updateMotion(event);
       });
     }
-    if (opticalTemperatureStream != null) {
-      _temperatureSubscription = opticalTemperatureStream!.listen((sample) {
-        _latestOpticalTemperatureCelsius = sample.celsius;
-        _latestOpticalTemperatureTimestamp = sample.timestamp;
-        _temperatureStreamController.add(sample.celsius);
-        //debugPrint('Temperature sample added: ${sample.celsius}');
-      });
-    }
-
     return inputStream.map((sample) {
       final selectedOpticalSignal = opticalChannelSelector.select(sample);
       final ambientCanceled = ambientCanceler.filter(
@@ -630,9 +621,10 @@ class PpgFilter {
 
     await for (final sample in _sampleStream) {
       buffer.add(sample);
-      buffer.removeWhere(
-        (item) => item.timestamp < sample.timestamp - windowDurationTicks,
-      );
+      final cutoff = sample.timestamp - windowDurationTicks;
+      while (buffer.isNotEmpty && buffer.first.timestamp < cutoff) {
+        buffer.removeAt(0);
+      }
 
       if ((sample.timestamp - lastEvaluationTick) < evaluationPeriodTicks) {
         continue;
