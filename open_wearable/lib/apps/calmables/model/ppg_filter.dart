@@ -41,6 +41,7 @@ class _VitalsComputeResult {
   final double? peakHeartRate;
   final List<int> peakTimestamps;
   final List<double> ibiTicks;
+  final String debugReason;
 
   const _VitalsComputeResult({
     required this.qualityScore,
@@ -48,6 +49,7 @@ class _VitalsComputeResult {
     required this.peakHeartRate,
     required this.peakTimestamps,
     required this.ibiTicks,
+    required this.debugReason,
   });
 }
 
@@ -74,10 +76,12 @@ _VitalsComputeResult _evaluateVitalsIsolated(_VitalsComputeInput input) {
 
   double qualityScore;
   double averageMotion;
+  final reasons = StringBuffer();
 
   if (recentCount < minimumSamples) {
     qualityScore = 0.0;
     averageMotion = 0.0;
+    reasons.write('too few recent samples ($recentCount < $minimumSamples)');
   } else {
     var sumAbs = 0.0;
     var minS = double.infinity;
@@ -101,6 +105,7 @@ _VitalsComputeResult _evaluateVitalsIsolated(_VitalsComputeInput input) {
 
     if (!meanAbs.isFinite || meanAbs <= 1e-6) {
       qualityScore = 0.0;
+      reasons.write('meanAbs too low (${meanAbs.toStringAsFixed(6)})');
     } else {
       final rangeS = maxS - minS;
       final meanS = sumS / recentCount;
@@ -115,12 +120,23 @@ _VitalsComputeResult _evaluateVitalsIsolated(_VitalsComputeInput input) {
           ((0.45 * rangeScore) + (0.35 * stdScore) + (0.20 * motionScore))
               .clamp(0.0, 1.0);
 
+      reasons.write('range=${rangeS.toStringAsFixed(3)} '
+          'rangeScore=${rangeScore.toStringAsFixed(2)}, '
+          'std=${stdS.toStringAsFixed(3)} '
+          'stdScore=${stdScore.toStringAsFixed(2)}, '
+          'motion=${averageMotion.toStringAsFixed(2)} '
+          'motionScore=${motionScore.toStringAsFixed(2)}, '
+          'waveformQ=${qualityScore.toStringAsFixed(2)}');
+
       if (averageMotion >= 1.45) {
         qualityScore = min(qualityScore, 0.10);
+        reasons.write(' → clamped to 0.10 (motion>=1.45)');
       } else if (averageMotion >= 1.12) {
         qualityScore = min(qualityScore, 0.24);
+        reasons.write(' → clamped to 0.24 (motion>=1.12)');
       } else if (averageMotion >= 0.88) {
         qualityScore = min(qualityScore, 0.45);
+        reasons.write(' → clamped to 0.45 (motion>=0.88)');
       }
     }
   }
@@ -140,70 +156,81 @@ _VitalsComputeResult _evaluateVitalsIsolated(_VitalsComputeInput input) {
     }
   }
 
-  // ── Peak detection (Fix 4: zero temp-list allocations) ───────────────────
+  // ── MSPTD fast peak detection ──────────────────────────────────────────────
+  // Modified Scalogram-based Peak and Trough Detection (Scholkmann et al. 2012)
+  // with early-termination optimisation.
+  //
+  // For every sample i we count gamma[i] = number of consecutive scales s
+  // (starting at s=1) for which signal[i] is strictly greater than
+  // signal[i−s] AND signal[i+s].  Because we grow s from 1 upward, the
+  // endpoint check is equivalent to a full-window maximum check, and the
+  // first failure means no larger scale can pass either → early exit.
   double? peakHeartRate;
   List<int> peakTimestamps = const [];
 
   if (n >= 8) {
-    // Single-pass mean.
-    var sum = 0.0;
-    for (var i = 0; i < n; i++) {
-      sum += signals[i];
-    }
-    final mean = sum / n;
+    final safeSF = effectiveSampleFreqHz.isFinite && effectiveSampleFreqHz > 0
+        ? effectiveSampleFreqHz
+        : (input.sampleFreq.isFinite && input.sampleFreq > 0
+            ? input.sampleFreq
+            : 50.0);
 
-    // Single-pass std (no centered list).
-    var sumSqDiff = 0.0;
-    for (var i = 0; i < n; i++) {
-      final d = signals[i] - mean;
-      sumSqDiff += d * d;
-    }
-    final signalStd = sqrt(sumSqDiff / n);
+    // Scale limits derived from physiological beat-interval range.
+    final scaleMax = min(n ~/ 2,
+        max(1, (safeSF * input.maxBeatIntervalSec / 2).round()));
+    final scaleThreshold =
+        max(1, (safeSF * input.minBeatIntervalSec / 2).round());
 
-    if (signalStd.isFinite && signalStd >= 1e-4) {
-      final safeSF = effectiveSampleFreqHz.isFinite && effectiveSampleFreqHz > 0
-          ? effectiveSampleFreqHz
-          : (input.sampleFreq.isFinite && input.sampleFreq > 0
-              ? input.sampleFreq
-              : 50.0);
-      final minPeakDist =
-          max(1, (safeSF * input.minBeatIntervalSec * 0.85).round());
-      final ampThresh = max(0.04, signalStd * 0.35);
-
-      final peakIndices = <int>[];
-      for (var i = 1; i < n - 1; i++) {
-        final c = signals[i] - mean;
-        if (!c.isFinite || c < ampThresh) continue;
-        if (c >= (signals[i - 1] - mean) && c > (signals[i + 1] - mean)) {
-          if (peakIndices.isNotEmpty &&
-              (i - peakIndices.last) < minPeakDist) {
-            if (c > (signals[peakIndices.last] - mean)) {
-              peakIndices[peakIndices.length - 1] = i;
-            }
-            continue;
-          }
-          peakIndices.add(i);
+    // Build scalogram column sums (gamma) with early termination.
+    final gamma = List<int>.filled(n, 0);
+    for (var i = 1; i < n - 1; i++) {
+      final maxS = min(scaleMax, min(i, n - 1 - i));
+      for (var s = 1; s <= maxS; s++) {
+        if (signals[i] > signals[i - s] && signals[i] > signals[i + s]) {
+          gamma[i]++;
+        } else {
+          break; // early termination – larger scales cannot pass
         }
       }
+    }
 
-      peakTimestamps =
-          peakIndices.map((i) => timestamps[i]).toList(growable: false);
+    // Collect candidate peaks: gamma must reach at least scaleThreshold,
+    // and the point must be a local maximum in gamma itself (suppress
+    // plateau edges).
+    final minDist = max(1, (safeSF * input.minBeatIntervalSec * 0.85).round());
+    final peakIndices = <int>[];
 
-      // HR from peaks.
-      if (peakTimestamps.length >= 2) {
-        final intervals = <double>[];
-        for (var i = 1; i < peakTimestamps.length; i++) {
-          final sec = (peakTimestamps[i] - peakTimestamps[i - 1]).toDouble() /
-              max(1.0, tps);
-          if (sec >= input.minBeatIntervalSec &&
-              sec <= input.maxBeatIntervalSec) {
-            intervals.add(sec);
-          }
+    for (var i = 1; i < n - 1; i++) {
+      if (gamma[i] < scaleThreshold) continue;
+      if (gamma[i] < gamma[i - 1] || gamma[i] < gamma[i + 1]) continue;
+
+      // Enforce refractory period – keep the more prominent peak.
+      if (peakIndices.isNotEmpty && (i - peakIndices.last) < minDist) {
+        if (gamma[i] > gamma[peakIndices.last]) {
+          peakIndices[peakIndices.length - 1] = i;
         }
-        if (intervals.isNotEmpty) {
-          final hr = 60.0 / intervals.last;
-          if (hr.isFinite && hr >= 30 && hr <= 240) peakHeartRate = hr;
+        continue;
+      }
+      peakIndices.add(i);
+    }
+
+    peakTimestamps =
+        peakIndices.map((i) => timestamps[i]).toList(growable: false);
+
+    // HR from peaks.
+    if (peakTimestamps.length >= 2) {
+      final intervals = <double>[];
+      for (var i = 1; i < peakTimestamps.length; i++) {
+        final sec = (peakTimestamps[i] - peakTimestamps[i - 1]).toDouble() /
+            max(1.0, tps);
+        if (sec >= input.minBeatIntervalSec &&
+            sec <= input.maxBeatIntervalSec) {
+          intervals.add(sec);
         }
+      }
+      if (intervals.isNotEmpty) {
+        final hr = 60.0 / intervals.last;
+        if (hr.isFinite && hr >= 30 && hr <= 240) peakHeartRate = hr;
       }
     }
   }
@@ -212,6 +239,9 @@ _VitalsComputeResult _evaluateVitalsIsolated(_VitalsComputeInput input) {
   final peakScore = (peakTimestamps.length / 8.0).clamp(0.0, 1.0);
   qualityScore =
       ((0.78 * qualityScore) + (0.22 * peakScore)).clamp(0.0, 1.0);
+  reasons.write(', peaks=${peakTimestamps.length} '
+      'peakScore=${peakScore.toStringAsFixed(2)} '
+      'afterPeak=${qualityScore.toStringAsFixed(2)}');
 
   // ── IBI computation ──────────────────────────────────────────────────────
   final ibiTicks = <double>[];
@@ -247,6 +277,9 @@ _VitalsComputeResult _evaluateVitalsIsolated(_VitalsComputeInput input) {
         final rhythmScore = (1.0 - (ibiVariation / 0.55)).clamp(0.0, 1.0);
         qualityScore =
             ((0.78 * qualityScore) + (0.22 * rhythmScore)).clamp(0.0, 1.0);
+        reasons.write(', ibiCV=${ibiVariation.toStringAsFixed(3)} '
+            'rhythmScore=${rhythmScore.toStringAsFixed(2)} '
+            'finalQ=${qualityScore.toStringAsFixed(2)}');
       }
     }
   }
@@ -257,6 +290,7 @@ _VitalsComputeResult _evaluateVitalsIsolated(_VitalsComputeInput input) {
     peakHeartRate: peakHeartRate,
     peakTimestamps: peakTimestamps,
     ibiTicks: ibiTicks,
+    debugReason: reasons.toString(),
   );
 }
 
@@ -693,15 +727,21 @@ class PpgFilter {
       lastEvaluationTick = sample.timestamp.toDouble();
 
       //debugPrint('rawRed: ${sample.rawRed}, rawIr: ${sample.rawIr}');
-      if (sample.rawIr >= 9.3e6 || (sample.rawRed - sample.rawIr).abs() > 1e5) {
+      /*if (sample.rawIr >= 9.6e6 || (sample.rawRed - sample.rawIr).abs() > 1e5) {
+        debugPrint('PPG Quality: unavailable — rawIr=${sample.rawIr.toStringAsFixed(0)}, '
+            '|rawRed-rawIr|=${(sample.rawRed - sample.rawIr).abs().toStringAsFixed(0)} '
+            '(sensor saturated or no skin contact)');
         yield const PpgVitals.invalid(
             signalQuality: PpgSignalQuality.unavailable);
         continue;
-      }
+      }*/
 
       if (buffer.length < 20 ||
           (buffer.last.timestamp - buffer.first.timestamp) <
               minimumWindowTicks) {
+        debugPrint('PPG Quality: unavailable — buffer too small '
+            '(${buffer.length} samples, '
+            '${((buffer.last.timestamp - buffer.first.timestamp) / ticksPerSecond).toStringAsFixed(1)}s)');
         yield const PpgVitals.invalid(
           signalQuality: PpgSignalQuality.unavailable,
         );
@@ -730,6 +770,8 @@ class PpgFilter {
       final ibiTicks = result.ibiTicks;
 
       if (recentMotion >= 1.45) {
+        debugPrint('PPG Quality: bad — excessive motion '
+            '(${recentMotion.toStringAsFixed(2)} >= 1.45)');
         yield const PpgVitals.invalid(
           signalQuality: PpgSignalQuality.bad,
         );
@@ -742,12 +784,15 @@ class PpgFilter {
       );
       if (opticalTemperatureStream != null) {
         if (!inEarTemperature.hasFreshTemperatureSample) {
+          debugPrint('PPG Quality: unavailable — no fresh temperature sample');
           yield const PpgVitals.invalid(
             signalQuality: PpgSignalQuality.unavailable,
           );
           continue;
         }
         if (!inEarTemperature.inEarByTemperature) {
+          debugPrint('PPG Quality: bad — temperature below threshold '
+              '(not in ear)');
           yield const PpgVitals.invalid(
             signalQuality: PpgSignalQuality.bad,
           );
@@ -780,6 +825,10 @@ class PpgFilter {
       }
 
       final classifiedQuality = _classifyQuality(qualityScore);
+      debugPrint('PPG Quality: ${classifiedQuality.name} '
+          '(score=${qualityScore.toStringAsFixed(3)}, '
+          'HR=${peakHeartRate?.toStringAsFixed(1) ?? "null"}) — '
+          '${result.debugReason}');
 
       if (previousQuality != null) {
         if ((previousQuality == PpgSignalQuality.good ||
