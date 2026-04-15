@@ -52,7 +52,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
   ControlMode _controlMode = ControlMode.manual;
   StreamSubscription<double?>? _heartRateSubscription;
 
-  late Wearable calmablesDevice;
+  Wearable? calmablesDevice;
 
   // ESP32(Calmables)用スライダー値（0-255）
   int calmablesSliderValue = 0;
@@ -76,9 +76,12 @@ class _CalmablesPageState extends State<CalmablesPage> {
         return;
       }
 
-      calmablesDevice = widget.connectedDevices.firstWhere(
-        (device) => device.name.toLowerCase().contains('calmables'),
-      );
+      calmablesDevice = widget.connectedDevices
+          .cast<Wearable?>()
+          .firstWhere(
+            (device) => device!.name.toLowerCase().contains('calmables'),
+            orElse: () => null,
+          );
 
       _initializePipeline();
     });
@@ -142,9 +145,14 @@ class _CalmablesPageState extends State<CalmablesPage> {
   static const int pwmHistoryLength = 50; // 表示用に長めに保持
 
   Future<void> sendDataToCalmables(List<int> data) async {
+    final device = calmablesDevice;
+    if (device == null) {
+      debugPrint('No Calmables device connected, skipping BLE write.');
+      return;
+    }
     try {
-      final writeManager = calmablesDevice.getCapability<BleGattManager>();
-      final deviceId = calmablesDevice.deviceId;
+      final writeManager = device.getCapability<BleGattManager>();
+      final deviceId = device.deviceId;
 
       final serviceUuid = _serviceUuid.toLowerCase();
       final characteristicUuid = _characteristicUuid.toLowerCase();
