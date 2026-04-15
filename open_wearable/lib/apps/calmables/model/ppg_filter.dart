@@ -9,6 +9,257 @@ import 'package:open_wearable/apps/calmables/model/band_pass_filter.dart';
 import 'package:open_wearable/apps/calmables/model/high_pass_filter.dart';
 import 'package:open_wearable/apps/calmables/model/hrv_lfhf.dart';
 
+// ---------------------------------------------------------------------------
+// Top-level types & function for background isolate computation (Fix 4 + 5).
+// ---------------------------------------------------------------------------
+
+class _VitalsComputeInput {
+  final List<double> signals;
+  final List<double> motionLevels;
+  final List<int> timestamps;
+  final int latestTimestamp;
+  final double ticksPerSecond;
+  final double sampleFreq;
+  final double minBeatIntervalSec;
+  final double maxBeatIntervalSec;
+
+  const _VitalsComputeInput({
+    required this.signals,
+    required this.motionLevels,
+    required this.timestamps,
+    required this.latestTimestamp,
+    required this.ticksPerSecond,
+    required this.sampleFreq,
+    required this.minBeatIntervalSec,
+    required this.maxBeatIntervalSec,
+  });
+}
+
+class _VitalsComputeResult {
+  final double qualityScore;
+  final double averageMotion;
+  final double? peakHeartRate;
+  final List<int> peakTimestamps;
+  final List<double> ibiTicks;
+
+  const _VitalsComputeResult({
+    required this.qualityScore,
+    required this.averageMotion,
+    required this.peakHeartRate,
+    required this.peakTimestamps,
+    required this.ibiTicks,
+  });
+}
+
+/// Runs entirely in a background isolate via [compute].
+_VitalsComputeResult _evaluateVitalsIsolated(_VitalsComputeInput input) {
+  final signals = input.signals;
+  final motionLevels = input.motionLevels;
+  final timestamps = input.timestamps;
+  final n = signals.length;
+  final tps = input.ticksPerSecond;
+
+  // ── Quality scoring (recent 3 s window) ──────────────────────────────────
+  final qualityWindowTicks = 3.0 * tps;
+  final latestTs = input.latestTimestamp;
+  final cutoffTs = latestTs - qualityWindowTicks;
+
+  var recentStart = n;
+  for (var i = n - 1; i >= 0; i--) {
+    if (timestamps[i] < cutoffTs) break;
+    recentStart = i;
+  }
+  final recentCount = n - recentStart;
+  final minimumSamples = max(8, (input.sampleFreq * 1.2).round());
+
+  double qualityScore;
+  double averageMotion;
+
+  if (recentCount < minimumSamples) {
+    qualityScore = 0.0;
+    averageMotion = 0.0;
+  } else {
+    var sumAbs = 0.0;
+    var minS = double.infinity;
+    var maxS = double.negativeInfinity;
+    var sumMotion = 0.0;
+    var sumS = 0.0;
+    var sumSSq = 0.0;
+
+    for (var i = recentStart; i < n; i++) {
+      final s = signals[i];
+      sumAbs += s.abs();
+      if (s < minS) minS = s;
+      if (s > maxS) maxS = s;
+      sumMotion += motionLevels[i];
+      sumS += s;
+      sumSSq += s * s;
+    }
+
+    final meanAbs = sumAbs / recentCount;
+    averageMotion = sumMotion / recentCount;
+
+    if (!meanAbs.isFinite || meanAbs <= 1e-6) {
+      qualityScore = 0.0;
+    } else {
+      final rangeS = maxS - minS;
+      final meanS = sumS / recentCount;
+      final variance = (sumSSq / recentCount) - (meanS * meanS);
+      final stdS = variance > 0 ? sqrt(variance) : 0.0;
+
+      final rangeScore = ((rangeS - 0.08) / 0.95).clamp(0.0, 1.0);
+      final stdScore = ((stdS - 0.025) / 0.30).clamp(0.0, 1.0);
+      final motionScore = (1.0 - (averageMotion / 2.2)).clamp(0.0, 1.0);
+
+      qualityScore =
+          ((0.45 * rangeScore) + (0.35 * stdScore) + (0.20 * motionScore))
+              .clamp(0.0, 1.0);
+
+      if (averageMotion >= 1.45) {
+        qualityScore = min(qualityScore, 0.10);
+      } else if (averageMotion >= 1.12) {
+        qualityScore = min(qualityScore, 0.24);
+      } else if (averageMotion >= 0.88) {
+        qualityScore = min(qualityScore, 0.45);
+      }
+    }
+  }
+
+  // ── Effective sample frequency ────────────────────────────────────────────
+  double effectiveSampleFreqHz;
+  if (n < 2) {
+    effectiveSampleFreqHz = input.sampleFreq;
+  } else {
+    final durationTicks = (timestamps.last - timestamps.first).toDouble();
+    if (durationTicks <= 0) {
+      effectiveSampleFreqHz = input.sampleFreq;
+    } else {
+      final est = ((n - 1) * tps) / durationTicks;
+      effectiveSampleFreqHz =
+          (est.isFinite && est >= 5 && est <= 200) ? est : input.sampleFreq;
+    }
+  }
+
+  // ── Peak detection (Fix 4: zero temp-list allocations) ───────────────────
+  double? peakHeartRate;
+  List<int> peakTimestamps = const [];
+
+  if (n >= 8) {
+    // Single-pass mean.
+    var sum = 0.0;
+    for (var i = 0; i < n; i++) {
+      sum += signals[i];
+    }
+    final mean = sum / n;
+
+    // Single-pass std (no centered list).
+    var sumSqDiff = 0.0;
+    for (var i = 0; i < n; i++) {
+      final d = signals[i] - mean;
+      sumSqDiff += d * d;
+    }
+    final signalStd = sqrt(sumSqDiff / n);
+
+    if (signalStd.isFinite && signalStd >= 1e-4) {
+      final safeSF = effectiveSampleFreqHz.isFinite && effectiveSampleFreqHz > 0
+          ? effectiveSampleFreqHz
+          : (input.sampleFreq.isFinite && input.sampleFreq > 0
+              ? input.sampleFreq
+              : 50.0);
+      final minPeakDist =
+          max(1, (safeSF * input.minBeatIntervalSec * 0.85).round());
+      final ampThresh = max(0.04, signalStd * 0.35);
+
+      final peakIndices = <int>[];
+      for (var i = 1; i < n - 1; i++) {
+        final c = signals[i] - mean;
+        if (!c.isFinite || c < ampThresh) continue;
+        if (c >= (signals[i - 1] - mean) && c > (signals[i + 1] - mean)) {
+          if (peakIndices.isNotEmpty &&
+              (i - peakIndices.last) < minPeakDist) {
+            if (c > (signals[peakIndices.last] - mean)) {
+              peakIndices[peakIndices.length - 1] = i;
+            }
+            continue;
+          }
+          peakIndices.add(i);
+        }
+      }
+
+      peakTimestamps =
+          peakIndices.map((i) => timestamps[i]).toList(growable: false);
+
+      // HR from peaks.
+      if (peakTimestamps.length >= 2) {
+        final intervals = <double>[];
+        for (var i = 1; i < peakTimestamps.length; i++) {
+          final sec = (peakTimestamps[i] - peakTimestamps[i - 1]).toDouble() /
+              max(1.0, tps);
+          if (sec >= input.minBeatIntervalSec &&
+              sec <= input.maxBeatIntervalSec) {
+            intervals.add(sec);
+          }
+        }
+        if (intervals.isNotEmpty) {
+          final hr = 60.0 / intervals.last;
+          if (hr.isFinite && hr >= 30 && hr <= 240) peakHeartRate = hr;
+        }
+      }
+    }
+  }
+
+  // ── Peak-count quality factor ────────────────────────────────────────────
+  final peakScore = (peakTimestamps.length / 8.0).clamp(0.0, 1.0);
+  qualityScore =
+      ((0.78 * qualityScore) + (0.22 * peakScore)).clamp(0.0, 1.0);
+
+  // ── IBI computation ──────────────────────────────────────────────────────
+  final ibiTicks = <double>[];
+  for (var i = 1; i < peakTimestamps.length; i++) {
+    final interval = (peakTimestamps[i] - peakTimestamps[i - 1]).toDouble();
+    final sec = interval / tps;
+    if (interval > 0 &&
+        sec >= input.minBeatIntervalSec &&
+        sec <= input.maxBeatIntervalSec) {
+      ibiTicks.add(interval);
+    }
+  }
+
+  // ── Rhythm-based quality refinement ──────────────────────────────────────
+  if (ibiTicks.length >= 2) {
+    final sorted = [...ibiTicks]..sort();
+    final median = sorted[sorted.length ~/ 2];
+    final low = median * 0.65;
+    final high = median * 1.35;
+    final robust =
+        ibiTicks.where((v) => v >= low && v <= high).toList(growable: false);
+    final robustIbi = robust.length >= 2 ? robust : ibiTicks;
+
+    final meanIbi = robustIbi.reduce((a, b) => a + b) / robustIbi.length;
+    if (meanIbi.isFinite && meanIbi > 0) {
+      var sqSum = 0.0;
+      for (final v in robustIbi) {
+        final d = v - meanIbi;
+        sqSum += d * d;
+      }
+      final ibiVariation = sqrt(sqSum / robustIbi.length) / meanIbi;
+      if (ibiVariation.isFinite) {
+        final rhythmScore = (1.0 - (ibiVariation / 0.55)).clamp(0.0, 1.0);
+        qualityScore =
+            ((0.78 * qualityScore) + (0.22 * rhythmScore)).clamp(0.0, 1.0);
+      }
+    }
+  }
+
+  return _VitalsComputeResult(
+    qualityScore: qualityScore,
+    averageMotion: averageMotion,
+    peakHeartRate: peakHeartRate,
+    peakTimestamps: peakTimestamps,
+    ibiTicks: ibiTicks,
+  );
+}
+
 enum PpgSignalQuality {
   unavailable,
   bad,
@@ -343,124 +594,6 @@ class PpgFilter {
     return _hrvEstimateMs;
   }
 
-  ({double? heartRateBpm, List<int> peakTimestamps}) _estimateHeartRateByPeak(
-    List<_MotionAwareSample> samples, {
-    required double ticksPerSecond,
-    required double estimatedSampleFreqHz,
-  }) {
-    if (samples.length < 8) {
-      return (heartRateBpm: null, peakTimestamps: const []);
-    }
-
-    // Simple extraction: local maxima on the filtered waveform with a fixed
-    // refractory distance and dynamic amplitude threshold.
-    final signal =
-        samples.map((sample) => sample.signal).toList(growable: false);
-    final mean = signal.reduce((a, b) => a + b) / signal.length;
-    final centered =
-        signal.map((value) => value - mean).toList(growable: false);
-
-    final signalStd = _standardDeviation(centered);
-    if (!signalStd.isFinite || signalStd < 1e-4) {
-      return (heartRateBpm: null, peakTimestamps: const []);
-    }
-
-    final safeSampleFreq =
-        estimatedSampleFreqHz.isFinite && estimatedSampleFreqHz > 0
-            ? estimatedSampleFreqHz
-            : (sampleFreq.isFinite && sampleFreq > 0 ? sampleFreq : 50.0);
-    final minPeakDistanceSamples =
-        max(1, (safeSampleFreq * _minBeatIntervalSec * 0.85).round());
-    final amplitudeThreshold = max(0.04, signalStd * 0.35);
-
-    final peakIndices = <int>[];
-    for (var i = 1; i < centered.length - 1; i++) {
-      final current = centered[i];
-      if (!current.isFinite || current < amplitudeThreshold) {
-        continue;
-      }
-      final isLocalMaximum =
-          current >= centered[i - 1] && current > centered[i + 1];
-      if (!isLocalMaximum) {
-        continue;
-      }
-
-      if (peakIndices.isNotEmpty &&
-          (i - peakIndices.last) < minPeakDistanceSamples) {
-        // Within refractory period keep only the stronger peak.
-        if (current > centered[peakIndices.last]) {
-          peakIndices[peakIndices.length - 1] = i;
-        }
-        continue;
-      }
-      peakIndices.add(i);
-    }
-
-    final peaks = peakIndices
-        .map((index) => samples[index].timestamp)
-        .toList(growable: false);
-
-    return _estimateHeartRateFromPeakTimestamps(
-      peaks,
-      ticksPerSecond: ticksPerSecond,
-    );
-  }
-
-  ({double? heartRateBpm, List<int> peakTimestamps})
-      _estimateHeartRateFromPeakTimestamps(
-    List<int> peaks, {
-    required double ticksPerSecond,
-  }) {
-    if (peaks.length < 2) {
-      return (heartRateBpm: null, peakTimestamps: peaks);
-    }
-
-    final intervalsSeconds = <double>[];
-    for (var i = 1; i < peaks.length; i++) {
-      final intervalSeconds =
-          (peaks[i] - peaks[i - 1]).toDouble() / max(1.0, ticksPerSecond);
-      if (intervalSeconds >= _minBeatIntervalSec &&
-          intervalSeconds <= _maxBeatIntervalSec) {
-        intervalsSeconds.add(intervalSeconds);
-      }
-    }
-    if (intervalsSeconds.isEmpty) {
-      return (heartRateBpm: null, peakTimestamps: peaks);
-    }
-
-    //intervalsSeconds.sort();
-    //final medianIntervalSeconds =
-    //intervalsSeconds[intervalsSeconds.length ~/ 2];
-    final latestIntervalSeconds = intervalsSeconds.last;
-
-    //final heartRate = 60.0 / medianIntervalSeconds;
-    final heartRate = 60.0 / latestIntervalSeconds;
-    if (!heartRate.isFinite || heartRate < 30 || heartRate > 240) {
-      return (heartRateBpm: null, peakTimestamps: peaks);
-    }
-
-    return (heartRateBpm: heartRate, peakTimestamps: peaks);
-  }
-
-  double _estimateEffectiveSampleFreqHz(
-    List<_MotionAwareSample> samples, {
-    required double ticksPerSecond,
-  }) {
-    if (samples.length < 2) {
-      return sampleFreq;
-    }
-    final durationTicks =
-        (samples.last.timestamp - samples.first.timestamp).toDouble();
-    if (durationTicks <= 0) {
-      return sampleFreq;
-    }
-    final estimated = ((samples.length - 1) * ticksPerSecond) / durationTicks;
-    if (!estimated.isFinite || estimated < 5 || estimated > 200) {
-      return sampleFreq;
-    }
-    return estimated;
-  }
-
   List<double> _removeIbiOutliers(List<double> ibiTicks) {
     if (ibiTicks.length < 3) {
       return ibiTicks;
@@ -495,20 +628,6 @@ class PpgFilter {
     return sqrt(sumSquared / count);
   }
 
-  double _standardDeviation(List<double> values) {
-    if (values.length < 2) {
-      return 0;
-    }
-    final mean = values.reduce((a, b) => a + b) / values.length;
-    var variance = 0.0;
-    for (final value in values) {
-      final diff = value - mean;
-      variance += diff * diff;
-    }
-    variance /= values.length;
-    return sqrt(variance);
-  }
-
   PpgSignalQuality _classifyQuality(double score) {
     if (!score.isFinite || score <= 0) {
       return PpgSignalQuality.unavailable;
@@ -520,64 +639,6 @@ class PpgFilter {
       return PpgSignalQuality.fair;
     }
     return PpgSignalQuality.good;
-  }
-
-  ({double score, double averageMotion}) _estimateRecentWaveformQualityScore(
-    List<_MotionAwareSample> samples, {
-    required int latestTimestamp,
-    required double ticksPerSecond,
-  }) {
-    final qualityWindowTicks = 3.0 * ticksPerSecond;
-    final recent = samples
-        .where(
-          (sample) => sample.timestamp >= latestTimestamp - qualityWindowTicks,
-        )
-        .toList(growable: false);
-    final minimumSamples = max(8, (sampleFreq * 1.2).round());
-    if (recent.length < minimumSamples) {
-      return (score: 0.0, averageMotion: 0.0);
-    }
-
-    // Score waveform quality from the filtered signal that is displayed.
-    final filteredValues =
-        recent.map((sample) => sample.signal).toList(growable: false);
-    final meanFilteredAbs =
-        filteredValues.map((value) => value.abs()).reduce((a, b) => a + b) /
-            filteredValues.length;
-    if (!meanFilteredAbs.isFinite || meanFilteredAbs <= 1e-6) {
-      return (score: 0.0, averageMotion: 0.0);
-    }
-
-    final minFiltered = filteredValues.reduce(min);
-    final maxFiltered = filteredValues.reduce(max);
-    final rangeFiltered = maxFiltered - minFiltered;
-    final stdFiltered = _standardDeviation(filteredValues);
-
-    final averageMotion =
-        recent.map((sample) => sample.motionLevel).reduce((a, b) => a + b) /
-            recent.length;
-    // Filtered signal is normalized/bounded, so fixed thresholds are stable.
-    final rangeScore = ((rangeFiltered - 0.08) / 0.95).clamp(0.0, 1.0);
-    final stdScore = ((stdFiltered - 0.025) / 0.30).clamp(0.0, 1.0);
-    final motionScore = (1.0 - (averageMotion / 2.2)).clamp(0.0, 1.0);
-
-    var score = ((0.45 * rangeScore) + (0.35 * stdScore) + (0.20 * motionScore))
-        .clamp(0.0, 1.0);
-
-    // Make accelerometer motion a strong quality prior:
-    // heavy movement should almost always mark PPG quality as bad.
-    if (averageMotion >= 1.45) {
-      score = min(score, 0.10);
-    } else if (averageMotion >= 1.12) {
-      score = min(score, 0.24);
-    } else if (averageMotion >= 0.88) {
-      score = min(score, 0.45);
-    }
-
-    return (
-      score: score,
-      averageMotion: averageMotion,
-    );
   }
 
   ({bool hasFreshTemperatureSample, bool inEarByTemperature})
@@ -646,13 +707,27 @@ class PpgFilter {
         );
         continue;
       }
-      final recentQuality = _estimateRecentWaveformQualityScore(
-        buffer,
+      // Run heavy computation (quality scoring, peak detection, IBI)
+      // in a background isolate to keep the UI thread responsive.
+      final computeInput = _VitalsComputeInput(
+        signals: buffer.map((s) => s.signal).toList(growable: false),
+        motionLevels:
+            buffer.map((s) => s.motionLevel).toList(growable: false),
+        timestamps:
+            buffer.map((s) => s.timestamp).toList(growable: false),
         latestTimestamp: sample.timestamp,
         ticksPerSecond: ticksPerSecond,
+        sampleFreq: sampleFreq,
+        minBeatIntervalSec: _minBeatIntervalSec,
+        maxBeatIntervalSec: _maxBeatIntervalSec,
       );
-      var qualityScore = recentQuality.score;
-      final recentMotion = recentQuality.averageMotion;
+
+      final result = await compute(_evaluateVitalsIsolated, computeInput);
+
+      var qualityScore = result.qualityScore;
+      final recentMotion = result.averageMotion;
+      final peakHeartRate = result.peakHeartRate;
+      final ibiTicks = result.ibiTicks;
 
       if (recentMotion >= 1.45) {
         yield const PpgVitals.invalid(
@@ -677,48 +752,6 @@ class PpgFilter {
             signalQuality: PpgSignalQuality.bad,
           );
           continue;
-        }
-      }
-
-      final effectiveSampleFreqHz = _estimateEffectiveSampleFreqHz(
-        buffer,
-        ticksPerSecond: ticksPerSecond,
-      );
-      final peakEstimate = _estimateHeartRateByPeak(
-        buffer,
-        ticksPerSecond: ticksPerSecond,
-        estimatedSampleFreqHz: effectiveSampleFreqHz,
-      );
-      final peaks = peakEstimate.peakTimestamps;
-      final peakHeartRate = peakEstimate.heartRateBpm;
-
-      final peakScore = (peaks.length / 8.0).clamp(0.0, 1.0);
-      qualityScore =
-          ((0.78 * qualityScore) + (0.22 * peakScore)).clamp(0.0, 1.0);
-
-      final ibiTicks = <double>[];
-      for (var i = 1; i < peaks.length; i++) {
-        final interval = (peaks[i] - peaks[i - 1]).toDouble();
-        final intervalSeconds = interval / ticksPerSecond;
-        if (interval > 0 &&
-            intervalSeconds >= _minBeatIntervalSec &&
-            intervalSeconds <= _maxBeatIntervalSec) {
-          ibiTicks.add(interval);
-        }
-      }
-
-      if (ibiTicks.length >= 2) {
-        final robustIbiTicks = _removeIbiOutliers(ibiTicks);
-        final meanIbiTicks =
-            robustIbiTicks.reduce((a, b) => a + b) / robustIbiTicks.length;
-        if (meanIbiTicks.isFinite && meanIbiTicks > 0) {
-          final ibiVariation =
-              _standardDeviation(robustIbiTicks) / meanIbiTicks;
-          if (ibiVariation.isFinite) {
-            final rhythmScore = (1.0 - (ibiVariation / 0.55)).clamp(0.0, 1.0);
-            qualityScore =
-                ((0.78 * qualityScore) + (0.22 * rhythmScore)).clamp(0.0, 1.0);
-          }
         }
       }
 
