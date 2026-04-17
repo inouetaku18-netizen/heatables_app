@@ -365,22 +365,28 @@ class PpgOpticalSample {
 
 class PpgVitals {
   final double? heartRateBpm;
+  final double? rawHeartRateBpm;
   final double? hrvRmssdMs;
   final double? hrvLfhfRatio;
   final PpgSignalQuality signalQuality;
+  final int? timestamp;
 
   const PpgVitals({
     required this.heartRateBpm,
+    this.rawHeartRateBpm,
     required this.hrvRmssdMs,
     required this.hrvLfhfRatio,
     required this.signalQuality,
+    this.timestamp,
   });
 
   const PpgVitals.invalid({
     this.signalQuality = PpgSignalQuality.unavailable,
   })  : heartRateBpm = null,
+        rawHeartRateBpm = null,
         hrvRmssdMs = null,
-        hrvLfhfRatio = null;
+        hrvLfhfRatio = null,
+        timestamp = null;
 }
 
 class PpgMotionSample {
@@ -499,6 +505,16 @@ class PpgFilter {
 
   Stream<double?> get heartRateStream =>
       _metricsStream.map((vitals) => vitals.heartRateBpm);
+
+  /// Timestamped smoothed HR for chart plotting.
+  Stream<(int, double)> get smoothedHeartRateChartStream => _metricsStream
+      .where((v) => v.heartRateBpm != null && v.timestamp != null)
+      .map((v) => (v.timestamp!, v.heartRateBpm!));
+
+  /// Timestamped raw (unsmoothed) HR for chart plotting.
+  Stream<(int, double)> get rawHeartRateChartStream => _metricsStream
+      .where((v) => v.rawHeartRateBpm != null && v.timestamp != null)
+      .map((v) => (v.timestamp!, v.rawHeartRateBpm!));
 
   Stream<double?> get hrvStream =>
       _metricsStream.map((vitals) => vitals.hrvRmssdMs);
@@ -954,9 +970,11 @@ class PpgFilter {
 
       yield PpgVitals(
         heartRateBpm: smoothedHeartRate,
+        rawHeartRateBpm: peakHeartRate,
         hrvRmssdMs: smoothedHrvMs,
         hrvLfhfRatio: lfhfRatio,
         signalQuality: classifiedQuality,
+        timestamp: sample.timestamp,
       );
 
       previousQuality = classifiedQuality;
