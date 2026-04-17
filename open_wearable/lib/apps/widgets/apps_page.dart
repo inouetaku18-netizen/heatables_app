@@ -4,7 +4,8 @@ import 'package:go_router/go_router.dart';
 import 'package:open_earable_flutter/open_earable_flutter.dart';
 import 'package:open_wearable/apps/audio_response_measure/audio_response_measurement_view.dart';
 import 'package:open_wearable/apps/heart_tracker/widgets/heart_tracker_page.dart';
-import 'package:open_wearable/apps/calmables/widgets/calmables_page.dart'; //追加
+import 'package:open_wearable/apps/calmables/widgets/calmables_page.dart';
+import 'package:open_wearable/apps/calmables_experiment/widgets/calmables_experiment_page.dart'; //追加
 import 'package:open_wearable/apps/posture_tracker/model/earable_attitude_tracker.dart';
 import 'package:open_wearable/apps/models/sensor_matching.dart';
 import 'package:open_wearable/apps/posture_tracker/view/posture_tracker_view.dart';
@@ -217,7 +218,7 @@ final List<AppInfo> _apps = [
   AppInfo(
     logoPath: "lib/apps/calmables/assets/logo.png",
     title: "Calmables",
-    description: "Thermal stimulation based on HRV and temperature",
+    description: "Thermal stimulation based on heart rate",
     supportedDevices: _calmablesSupportedDevices,
     accentColor: _appAccentColor,
     widget: SelectEarableView(
@@ -258,6 +259,64 @@ final List<AppInfo> _apps = [
           );
 
           return CalmablesPage(
+            wearable: wearable,
+            ppgSensor: ppgSensor,
+            opticalTemperatureSensor: opticalTemperatureSensor,
+            accelerometerSensor: accelerometerSensor,
+            connectedDevices: connectedDevices,
+          );
+        }
+        return PlatformScaffold(
+          appBar: PlatformAppBar(title: PlatformText("Calmables Demo")),
+          body: Center(child: PlatformText("No PPG Sensor Found")),
+        );
+      },
+    ),
+  ),
+  AppInfo(
+    logoPath: "lib/apps/calmables_experiment/assets/logo.png",
+    title: "Calmables for experiment",
+    description: "Calmables app for experiment",
+    supportedDevices: _calmablesSupportedDevices,
+    accentColor: _appAccentColor,
+    widget: SelectEarableView(
+      supportedDevices: _calmablesSupportedDevices,
+      connectedDevices: connectedDevices,
+      startApp: (wearable, _, connectedDevices) async {
+        debugPrint('Wearable Name: ${wearable.name}');
+
+        for (final wearable in connectedDevices) {
+          debugPrint('Connected wearable device name: ${wearable.name}');
+        }
+
+        if (wearable.hasCapability<SensorManager>()) {
+          final sensors = wearable.requireCapability<SensorManager>().sensors;
+          final ppgSensor = findPpgSensor(sensors);
+
+          //Debug
+          for (final sensor in sensors) {
+            debugPrint('Sensor name: ${sensor.sensorName}');
+            debugPrint('Chart title: ${sensor.chartTitle}');
+            debugPrint('Axis names: ${sensor.axisNames.join(', ')}');
+            debugPrint('---');
+          }
+
+          if (ppgSensor == null) {
+            return PlatformScaffold(
+              appBar: PlatformAppBar(title: PlatformText('Calmables Demo')),
+              body: Center(
+                child: PlatformText('No PPG sensor found on this wearable'),
+              ),
+            );
+          }
+
+          final accelerometerSensor = findAccelerometerSensor(sensors);
+
+          final opticalTemperatureSensor = _findOpticalTemperatureSensor(
+            sensors,
+          );
+
+          return CalmablesExperimentPage(
             wearable: wearable,
             ppgSensor: ppgSensor,
             opticalTemperatureSensor: opticalTemperatureSensor,

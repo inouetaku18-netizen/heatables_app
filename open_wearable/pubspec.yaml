@@ -61,6 +61,7 @@ dependencies:
   wakelock_plus: ^1.4.0
   path: ^1.9.1
   universal_ble: ^0.21.1
+  permission_handler: ^12.0.1
 
 dev_dependencies:
   flutter_test:
@@ -89,6 +90,7 @@ flutter:
     - lib/apps/posture_tracker/assets/
     - lib/apps/heart_tracker/assets/
     - lib/apps/calmables/assets/
+    - lib/apps/calmables_experiment/assets/
     - android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
 
   # An image asset can refer to one or more resolution-specific "variants", seeq
