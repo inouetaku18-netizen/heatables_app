@@ -618,9 +618,27 @@ class PpgFilter {
         imuCanceler.updateMotion(event);
       });
     }
+    _MotionAwareSample? _lastValidSample;
+
     return inputStream.map((sample) {
       // Always use green channel.
       final selectedOpticalSignal = sample.green;
+
+      // Guard: skip non-finite BLE values to prevent permanent NaN
+      // poisoning of filter states (IIR filters never recover from NaN).
+      if (!selectedOpticalSignal.isFinite || !sample.ambient.isFinite) {
+        return _lastValidSample ??
+            _MotionAwareSample(
+              timestamp: sample.timestamp,
+              rawGreen: 0,
+              rawAmbient: 0,
+              rawRed: 0,
+              rawIr: 0,
+              signal: 0,
+              displaySignal: 0,
+              motionLevel: motionSuppressor.motionLevel,
+            );
+      }
 
       final ambientCanceled = ambientCanceler.filter(
         green: selectedOpticalSignal,
@@ -639,7 +657,7 @@ class PpgFilter {
       );
       final displaySignal = displayDetrender.filter(bounded);
 
-      return _MotionAwareSample(
+      final out = _MotionAwareSample(
         timestamp: sample.timestamp,
         rawGreen: selectedOpticalSignal,
         rawAmbient: sample.ambient,
@@ -649,6 +667,8 @@ class PpgFilter {
         displaySignal: displaySignal,
         motionLevel: motionSuppressor.motionLevel,
       );
+      _lastValidSample = out;
+      return out;
     });
   }
 
