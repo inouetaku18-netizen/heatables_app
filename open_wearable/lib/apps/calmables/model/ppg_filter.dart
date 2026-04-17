@@ -15,7 +15,6 @@ import 'package:open_wearable/apps/calmables/model/hrv_lfhf.dart';
 
 class _VitalsComputeInput {
   final List<double> signals;
-  final List<double> simpleSignals;
   final List<double> motionLevels;
   final List<int> timestamps;
   final int latestTimestamp;
@@ -26,7 +25,6 @@ class _VitalsComputeInput {
 
   const _VitalsComputeInput({
     required this.signals,
-    required this.simpleSignals,
     required this.motionLevels,
     required this.timestamps,
     required this.latestTimestamp,
@@ -42,7 +40,6 @@ class _VitalsComputeResult {
   final double averageMotion;
   final double? peakHeartRate;
   final List<int> peakTimestamps;
-  final List<int> simplePeakTimestamps;
   final List<double> ibiTicks;
   final double? peakToMedianRatio;
   final int peakCount;
@@ -54,7 +51,6 @@ class _VitalsComputeResult {
     required this.averageMotion,
     required this.peakHeartRate,
     required this.peakTimestamps,
-    required this.simplePeakTimestamps,
     required this.ibiTicks,
     required this.peakToMedianRatio,
     required this.peakCount,
@@ -331,57 +327,11 @@ _VitalsComputeResult _evaluateVitalsIsolated(_VitalsComputeInput input) {
     }
   }
 
-  // ── MSPTD on simple signal (0.5-3.2 Hz, no motion comp.) ─────────────────
-  List<int> simplePeakTimestamps = const [];
-  if (n >= 8) {
-    final safeSF = effectiveSampleFreqHz.isFinite && effectiveSampleFreqHz > 0
-        ? effectiveSampleFreqHz
-        : (input.sampleFreq.isFinite && input.sampleFreq > 0
-            ? input.sampleFreq
-            : 50.0);
-    final simpleSignals = input.simpleSignals;
-    final maxPeakSamples = min(n, (safeSF * 8).round());
-    final pStart = n - maxPeakSamples;
-    final pN = maxPeakSamples;
-    final pSignals = simpleSignals.sublist(pStart);
-    final pTs = timestamps.sublist(pStart);
-    final sMax = min(pN ~/ 2,
-        max(1, (safeSF * input.maxBeatIntervalSec / 2).round()));
-    final sThr = max(1, (safeSF * input.minBeatIntervalSec / 2).round());
-    final g = List<int>.filled(pN, 0);
-    for (var i = 1; i < pN - 1; i++) {
-      final ms = min(sMax, min(i, pN - 1 - i));
-      for (var s = 1; s <= ms; s++) {
-        if (pSignals[i] > pSignals[i - s] && pSignals[i] > pSignals[i + s]) {
-          g[i]++;
-        } else {
-          break;
-        }
-      }
-    }
-    final maxG = g.reduce(max);
-    final adaptiveThr = max(sThr, (maxG * 0.4).round());
-    final mDist = max(1, (safeSF * input.minBeatIntervalSec * 0.85).round());
-    final sIndices = <int>[];
-    for (var i = 1; i < pN - 1; i++) {
-      if (g[i] < adaptiveThr) continue;
-      if (g[i] < g[i - 1] || g[i] < g[i + 1]) continue;
-      if (sIndices.isNotEmpty && (i - sIndices.last) < mDist) {
-        if (g[i] > g[sIndices.last]) sIndices[sIndices.length - 1] = i;
-        continue;
-      }
-      sIndices.add(i);
-    }
-    simplePeakTimestamps =
-        sIndices.map((i) => pTs[i]).toList(growable: false);
-  }
-
   return _VitalsComputeResult(
     qualityScore: qualityScore,
     averageMotion: averageMotion,
     peakHeartRate: peakHeartRate,
     peakTimestamps: peakTimestamps,
-    simplePeakTimestamps: simplePeakTimestamps,
     ibiTicks: ibiTicks,
     peakToMedianRatio: peakToMedianRatio,
     peakCount: peakCount,
@@ -472,8 +422,6 @@ class PpgFilter {
   final StreamController<List<int>> _peakTimestampsController =
       StreamController.broadcast();
 
-  final StreamController<List<int>> _simplePeakTimestampsController =
-      StreamController.broadcast();
 
   final HrvLfhfCalculator _hrvLfhfCalculator = HrvLfhfCalculator();
 
@@ -490,7 +438,6 @@ class PpgFilter {
   Stream<_MotionAwareSample>? _processedStream;
   Stream<(int, double)>? _rawSignalStream;
   Stream<(int, double)>? _displaySignalStream;
-  Stream<(int, double)>? _simpleDisplaySignalStream;
   Stream<PpgVitals>? _vitalsStream;
 
   double? _latestOpticalTemperatureCelsius;
@@ -512,7 +459,6 @@ class PpgFilter {
   void initialize() {
     // Eagerly build pipelines so filters/subscriptions are ready on app start.
     displaySignalStream;
-    simpleDisplaySignalStream;
     _sampleStream;
     _metricsStream;
 
@@ -539,16 +485,6 @@ class PpgFilter {
         .map((sample) => (sample.timestamp, sample.signal))
         .asBroadcastStream();
     return _displaySignalStream!;
-  }
-
-  Stream<(int, double)> get simpleDisplaySignalStream {
-    if (_simpleDisplaySignalStream != null) {
-      return _simpleDisplaySignalStream!;
-    }
-    _simpleDisplaySignalStream = _sampleStream
-        .map((sample) => (sample.timestamp, sample.simpleSignal))
-        .asBroadcastStream();
-    return _simpleDisplaySignalStream!;
   }
 
   Stream<(int, double)> get rawSignalStream {
@@ -578,8 +514,6 @@ class PpgFilter {
   Stream<List<int>> get peakTimestampsStream =>
       _peakTimestampsController.stream;
 
-  Stream<List<int>> get simplePeakTimestampsStream =>
-      _simplePeakTimestampsController.stream;
 
   void dispose() {
     final motionSubscription = _motionSubscription;
@@ -595,7 +529,6 @@ class PpgFilter {
     }
     _temperatureStreamController.close();
     _peakTimestampsController.close();
-    _simplePeakTimestampsController.close();
   }
 
   Stream<_MotionAwareSample> get _sampleStream {
@@ -657,18 +590,11 @@ class PpgFilter {
       lowCut: 0.5,
       highCut: 8.0,
     );
-    // Simple bandpass (0.5–3.2 Hz) on inverted raw — no motion compensation.
-    final simpleBandPassFilter = BandPassFilter(
-      sampleFreq: safeSampleFreq,
-      lowCut: 0.5,
-      highCut: 3.2,
-    );
     final normalizer = _BoundedSignalNormalizer();
     final displayDetrender = _DisplayBaselineDetrender(
       sampleFreqHz: safeSampleFreq,
       timeConstantSeconds: 3.2,
     );
-    var lastFiniteSimple = 0.0;
 
     if (motionStream != null) {
       _motionSubscription = motionStream!.listen((event) {
@@ -697,15 +623,6 @@ class PpgFilter {
       );
       final displaySignal = displayDetrender.filter(bounded);
 
-      // Simple signal: inverted raw → bandpass 0.5–3.2 Hz (no motion comp.).
-      var rawInverted = -selectedOpticalSignal;
-      if (!rawInverted.isFinite) {
-        rawInverted = lastFiniteSimple;
-      } else {
-        lastFiniteSimple = rawInverted;
-      }
-      final simpleBandPassed = simpleBandPassFilter.filter(rawInverted);
-
       return _MotionAwareSample(
         timestamp: sample.timestamp,
         rawGreen: selectedOpticalSignal,
@@ -713,7 +630,6 @@ class PpgFilter {
         rawRed: sample.red,
         rawIr: sample.ir,
         signal: bandPassed,
-        simpleSignal: simpleBandPassed,
         displaySignal: displaySignal,
         motionLevel: motionSuppressor.motionLevel,
       );
@@ -864,8 +780,6 @@ class PpgFilter {
       // in a background isolate to keep the UI thread responsive.
       final computeInput = _VitalsComputeInput(
         signals: buffer.map((s) => s.signal).toList(growable: false),
-        simpleSignals:
-            buffer.map((s) => s.simpleSignal).toList(growable: false),
         motionLevels:
             buffer.map((s) => s.motionLevel).toList(growable: false),
         timestamps:
@@ -881,7 +795,6 @@ class PpgFilter {
 
       // Emit detected peak timestamps for chart overlays.
       _peakTimestampsController.add(result.peakTimestamps);
-      _simplePeakTimestampsController.add(result.simplePeakTimestamps);
 
       var qualityScore = result.qualityScore;
       final recentMotion = result.averageMotion;
@@ -902,7 +815,7 @@ class PpgFilter {
         previousQuality = PpgSignalQuality.unavailable;
         continue;
       }
-      if (ptm != null && ptm >= 10) {
+      if (ptm != null && ptm >= 5.0) {
         debugPrint('PPG Quality: bad — '
             'peakToMedian=${ptm.toStringAsFixed(2)} >= 10 — '
             '${result.debugReason}');
@@ -912,7 +825,7 @@ class PpgFilter {
         previousQuality = PpgSignalQuality.bad;
         continue;
       }
-      if (ptm != null && ptm >= 5) {
+      if (ptm != null && ptm >= 2.0) {
         debugPrint('PPG Quality: fair — '
             'peakToMedian=${ptm.toStringAsFixed(2)} >= 5 — '
             '${result.debugReason}');
@@ -1036,7 +949,7 @@ class PpgFilter {
           _hrvLfhfCalculator.addIbi(ibiMs);
         }
 
-        lfhfRatio = _hrvLfhfCalculator.computeLfhfRatio();
+        lfhfRatio = _hrvLfhfCalculator.compute()?.lfHfRatio;
       }
 
       yield PpgVitals(
@@ -1116,7 +1029,6 @@ class _MotionAwareSample {
   final double rawRed;
   final double rawIr;
   final double signal;
-  final double simpleSignal;
   final double displaySignal;
   final double motionLevel;
 
@@ -1127,7 +1039,6 @@ class _MotionAwareSample {
     required this.rawRed,
     required this.rawIr,
     required this.signal,
-    required this.simpleSignal,
     required this.displaySignal,
     required this.motionLevel,
   });

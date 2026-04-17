@@ -43,9 +43,7 @@ enum ControlMode { manual, autopilot }
 class _CalmablesPageState extends State<CalmablesPage> {
   PpgFilter? _ppgFilter;
   Stream<(int, double)>? _displayPpgSignalStream;
-  Stream<(int, double)>? _simpleDisplayPpgSignalStream;
   Stream<List<int>>? _peakTimestampsStream;
-  Stream<List<int>>? _simplePeakTimestampsStream;
   Stream<double?>? _heartRateStream;
   Stream<double?>? _hrvStream;
   Stream<double?>? _hrvLfhfStream;
@@ -301,9 +299,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
     }
     setState(() {
       _displayPpgSignalStream = ppgFilter.displaySignalStream;
-      _simpleDisplayPpgSignalStream = ppgFilter.simpleDisplaySignalStream;
       _peakTimestampsStream = ppgFilter.peakTimestampsStream;
-      _simplePeakTimestampsStream = ppgFilter.simplePeakTimestampsStream;
       _heartRateStream = ppgFilter.heartRateStream;
       _hrvStream = ppgFilter.hrvStream;
       _hrvLfhfStream = ppgFilter.hrvLfhfStream;
@@ -893,18 +889,6 @@ class _CalmablesPageState extends State<CalmablesPage> {
           fixedMeasureMin: null,
           fixedMeasureMax: null,
         ),
-        const SizedBox(height: 12),
-        if (_simpleDisplayPpgSignalStream != null)
-          _SignalPanelCard(
-            title: 'PPG Raw (0.5-3.2 Hz)',
-            subtitle: 'Ohne Motion Comp.',
-            icon: Icons.show_chart_rounded,
-            chartStream: _simpleDisplayPpgSignalStream!,
-            peakTimestampsStream: _simplePeakTimestampsStream,
-            timestampExponent: widget.ppgSensor.timestampExponent,
-            fixedMeasureMin: null,
-            fixedMeasureMax: null,
-          ),
         //_buildScanSection(),
         const SizedBox(height: 12),
         _buildLoggingCard(context),
