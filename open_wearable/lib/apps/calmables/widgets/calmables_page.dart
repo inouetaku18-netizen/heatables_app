@@ -43,6 +43,9 @@ enum ControlMode { manual, autopilot }
 class _CalmablesPageState extends State<CalmablesPage> {
   PpgFilter? _ppgFilter;
   Stream<(int, double)>? _displayPpgSignalStream;
+  Stream<(int, double)>? _simpleDisplayPpgSignalStream;
+  Stream<List<int>>? _peakTimestampsStream;
+  Stream<List<int>>? _simplePeakTimestampsStream;
   Stream<double?>? _heartRateStream;
   Stream<double?>? _hrvStream;
   Stream<double?>? _hrvLfhfStream;
@@ -298,6 +301,9 @@ class _CalmablesPageState extends State<CalmablesPage> {
     }
     setState(() {
       _displayPpgSignalStream = ppgFilter.displaySignalStream;
+      _simpleDisplayPpgSignalStream = ppgFilter.simpleDisplaySignalStream;
+      _peakTimestampsStream = ppgFilter.peakTimestampsStream;
+      _simplePeakTimestampsStream = ppgFilter.simplePeakTimestampsStream;
       _heartRateStream = ppgFilter.heartRateStream;
       _hrvStream = ppgFilter.hrvStream;
       _hrvLfhfStream = ppgFilter.hrvLfhfStream;
@@ -878,14 +884,27 @@ class _CalmablesPageState extends State<CalmablesPage> {
         ),
         const SizedBox(height: 12),
         _SignalPanelCard(
-          title: 'Filtered PPG (0.5-3.2 Hz)',
-          subtitle: '',
+          title: 'PPG + Motion Comp. (0.5-8 Hz)',
+          subtitle: 'HR Berechnung',
           icon: Icons.show_chart_rounded,
           chartStream: displayPpgSignalStream,
+          peakTimestampsStream: _peakTimestampsStream,
           timestampExponent: widget.ppgSensor.timestampExponent,
           fixedMeasureMin: null,
           fixedMeasureMax: null,
         ),
+        const SizedBox(height: 12),
+        if (_simpleDisplayPpgSignalStream != null)
+          _SignalPanelCard(
+            title: 'PPG Raw (0.5-3.2 Hz)',
+            subtitle: 'Ohne Motion Comp.',
+            icon: Icons.show_chart_rounded,
+            chartStream: _simpleDisplayPpgSignalStream!,
+            peakTimestampsStream: _simplePeakTimestampsStream,
+            timestampExponent: widget.ppgSensor.timestampExponent,
+            fixedMeasureMin: null,
+            fixedMeasureMax: null,
+          ),
         //_buildScanSection(),
         const SizedBox(height: 12),
         _buildLoggingCard(context),
@@ -1040,6 +1059,7 @@ class _SignalPanelCard extends StatelessWidget {
   final String subtitle;
   final IconData icon;
   final Stream<(int, double)> chartStream;
+  final Stream<List<int>>? peakTimestampsStream;
   final int timestampExponent;
   final double? fixedMeasureMin;
   final double? fixedMeasureMax;
@@ -1049,6 +1069,7 @@ class _SignalPanelCard extends StatelessWidget {
     required this.subtitle,
     required this.icon,
     required this.chartStream,
+    this.peakTimestampsStream,
     required this.timestampExponent,
     this.fixedMeasureMin,
     this.fixedMeasureMax,
@@ -1090,6 +1111,7 @@ class _SignalPanelCard extends StatelessWidget {
               height: 88,
               child: RollingChart(
                 dataSteam: chartStream,
+                peakTimestampsStream: peakTimestampsStream,
                 timestampExponent: timestampExponent,
                 timeWindow: 5,
                 showXAxis: false,

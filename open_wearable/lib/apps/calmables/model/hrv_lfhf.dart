@@ -25,8 +25,8 @@ class HrvLfhfCalculator {
     // 秒単位に変換
     final ibiSec = _ibiListMs.map((e) => e / 1000.0).toList();
 
-    // 3次スプライン補間し1000Hz等間隔化、4Hzにダウンサンプリング
-    final resampled = _resampleWithSpline(ibiSec, fsTarget: 4.0);
+    // 3次スプライン補間し4Hzに等間隔化
+    final resampled = _resampleWithCubicSpline(ibiSec, fsTarget: 4.0);
     if (resampled.isEmpty) return null;
 
     // 線形トレンド除去
@@ -48,7 +48,7 @@ class HrvLfhfCalculator {
 
   // functions below are private helpers for the LF/HF calculation
 
-  List<double> _resampleWithSpline(List<double> ibiSec,
+  List<double> _resampleWithCubicSpline(List<double> ibiSec,
       {required double fsTarget}) {
     if (ibiSec.length < 4) return [];
 
@@ -59,38 +59,73 @@ class HrvLfhfCalculator {
       timePoints.add(cumSum);
     }
 
-    // 1000Hzの高分解能時間軸
-    final fsHigh = 1000.0;
-    final dtHigh = 1.0 / fsHigh;
-    final highTimes = <double>[];
-    for (double t = timePoints.first; t <= timePoints.last; t += dtHigh) {
-      highTimes.add(t);
-    }
-
-    // 3次スプライン補間 → ここでは線形補間で代用
-    final splineValues = _linearInterpolate(timePoints, ibiSec, highTimes);
-
-    // 4Hzにダウンサンプリング
+    // Build target time axis at fsTarget Hz directly.
     final dtTarget = 1.0 / fsTarget;
     final targetTimes = <double>[];
     for (double t = timePoints.first; t <= timePoints.last; t += dtTarget) {
       targetTimes.add(t);
     }
-    return _linearInterpolate(highTimes, splineValues, targetTimes);
+    if (targetTimes.isEmpty) return [];
+
+    // Natural cubic spline interpolation.
+    return _cubicSplineInterpolate(timePoints, ibiSec, targetTimes);
   }
 
-  List<double> _linearInterpolate(
+  /// Natural cubic spline interpolation.
+  List<double> _cubicSplineInterpolate(
       List<double> x, List<double> y, List<double> xi) {
+    final n = x.length;
+    if (n < 2) return xi.map((_) => y.isEmpty ? 0.0 : y.first).toList();
+    if (n == 2) {
+      // Fall back to linear for 2 points.
+      final slope = (y[1] - y[0]) / (x[1] - x[0]);
+      return xi.map((t) => y[0] + slope * (t - x[0])).toList();
+    }
+
+    // h[i] = x[i+1] - x[i]
+    final h = List<double>.generate(n - 1, (i) => x[i + 1] - x[i]);
+
+    // Solve tridiagonal system for second derivatives (natural spline: s[0]=s[n-1]=0).
+    final s = List<double>.filled(n, 0);
+    final alpha = List<double>.filled(n, 0);
+    for (var i = 1; i < n - 1; i++) {
+      alpha[i] = 3.0 / h[i] * (y[i + 1] - y[i]) -
+          3.0 / h[i - 1] * (y[i] - y[i - 1]);
+    }
+
+    final l = List<double>.filled(n, 1);
+    final mu = List<double>.filled(n, 0);
+    final z = List<double>.filled(n, 0);
+
+    for (var i = 1; i < n - 1; i++) {
+      l[i] = 2.0 * (x[i + 1] - x[i - 1]) - h[i - 1] * mu[i - 1];
+      mu[i] = h[i] / l[i];
+      z[i] = (alpha[i] - h[i - 1] * z[i - 1]) / l[i];
+    }
+
+    // Back-substitute.
+    for (var j = n - 2; j >= 0; j--) {
+      s[j] = z[j] - mu[j] * s[j + 1];
+    }
+
+    // Precompute polynomial coefficients for each segment.
+    final b = List<double>.filled(n - 1, 0);
+    final c = List<double>.filled(n - 1, 0);
+    final d = List<double>.filled(n - 1, 0);
+    for (var i = 0; i < n - 1; i++) {
+      b[i] = (y[i + 1] - y[i]) / h[i] - h[i] * (s[i + 1] + 2.0 * s[i]) / 3.0;
+      c[i] = s[i];
+      d[i] = (s[i + 1] - s[i]) / (3.0 * h[i]);
+    }
+
+    // Evaluate spline at each target point.
     final result = <double>[];
-    int j = 0;
+    var seg = 0;
     for (final t in xi) {
-      while (j < x.length - 2 && t > x[j + 1]) j++;
-      final x0 = x[j];
-      final x1 = x[j + 1];
-      final y0 = y[j];
-      final y1 = y[j + 1];
-      final ratio = (t - x0) / (x1 - x0);
-      result.add(y0 + ratio * (y1 - y0));
+      // Advance segment index.
+      while (seg < n - 2 && t > x[seg + 1]) seg++;
+      final dx = t - x[seg];
+      result.add(y[seg] + b[seg] * dx + c[seg] * dx * dx + d[seg] * dx * dx * dx);
     }
     return result;
   }
@@ -130,8 +165,8 @@ class HrvLfhfCalculator {
     final psd = List<double>.filled(n ~/ 2 + 1, 0);
     for (int k = 0; k <= n ~/ 2; k++) {
       final re = fftResult[2 * k];
-      //final im = fftResult[2 * k + 1];
-      psd[k] = (re * re) / (fs * n);
+      final im = fftResult[2 * k + 1];
+      psd[k] = (re * re + im * im) / (fs * n);
     }
     return psd;
   }

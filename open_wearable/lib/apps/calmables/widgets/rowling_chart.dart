@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 class RollingChart extends StatefulWidget {
   final Stream<(int, double)> dataSteam;
+  final Stream<List<int>>? peakTimestampsStream;
   final int timestampExponent;
   final int timeWindow; // in seconds
   final bool showXAxis;
@@ -15,6 +16,7 @@ class RollingChart extends StatefulWidget {
   const RollingChart({
     super.key,
     required this.dataSteam,
+    this.peakTimestampsStream,
     required this.timestampExponent,
     required this.timeWindow,
     this.showXAxis = true,
@@ -30,11 +32,13 @@ class RollingChart extends StatefulWidget {
 class _RollingChartState extends State<RollingChart> {
   final Queue<_RawChartPoint> _rawData = Queue();
   StreamSubscription? _subscription;
+  StreamSubscription? _peakSubscription;
   Timer? _refreshTimer;
   bool _dirty = false;
 
   // Pre-computed paint data for the CustomPainter.
   List<Offset>? _normalizedPoints;
+  Set<int> _peakTimestamps = {};
   double _xMin = 0;
   double _xMax = 5;
   double _yMin = -1;
@@ -46,6 +50,7 @@ class _RollingChartState extends State<RollingChart> {
   void initState() {
     super.initState();
     _listenToStream();
+    _listenToPeaks();
     _refreshTimer = Timer.periodic(_refreshInterval, (_) {
       if (_dirty && mounted) {
         _dirty = false;
@@ -61,6 +66,10 @@ class _RollingChartState extends State<RollingChart> {
     if (oldWidget.dataSteam != widget.dataSteam) {
       _subscription?.cancel();
       _listenToStream();
+    }
+    if (oldWidget.peakTimestampsStream != widget.peakTimestampsStream) {
+      _peakSubscription?.cancel();
+      _listenToPeaks();
     }
   }
 
@@ -78,6 +87,13 @@ class _RollingChartState extends State<RollingChart> {
         _rawData.removeFirst();
       }
 
+      _dirty = true;
+    });
+  }
+
+  void _listenToPeaks() {
+    _peakSubscription = widget.peakTimestampsStream?.listen((timestamps) {
+      _peakTimestamps = timestamps.toSet();
       _dirty = true;
     });
   }
@@ -145,6 +161,9 @@ class _RollingChartState extends State<RollingChart> {
       child: CustomPaint(
         painter: _RollingChartPainter(
           points: points,
+          peakTimestamps: _peakTimestamps,
+          rawData: _rawData,
+          timestampExponent: widget.timestampExponent,
           xMin: _xMin,
           xMax: _xMax,
           yMin: _yMin,
@@ -162,12 +181,16 @@ class _RollingChartState extends State<RollingChart> {
   void dispose() {
     _refreshTimer?.cancel();
     _subscription?.cancel();
+    _peakSubscription?.cancel();
     super.dispose();
   }
 }
 
 class _RollingChartPainter extends CustomPainter {
   final List<Offset> points;
+  final Set<int> peakTimestamps;
+  final Queue<_RawChartPoint> rawData;
+  final int timestampExponent;
   final double xMin;
   final double xMax;
   final double yMin;
@@ -178,6 +201,9 @@ class _RollingChartPainter extends CustomPainter {
 
   _RollingChartPainter({
     required this.points,
+    required this.peakTimestamps,
+    required this.rawData,
+    required this.timestampExponent,
     required this.xMin,
     required this.xMax,
     required this.yMin,
@@ -266,6 +292,23 @@ class _RollingChartPainter extends CustomPainter {
       }
     }
     canvas.drawPath(path, linePaint);
+
+    // Draw peak markers.
+    if (peakTimestamps.isNotEmpty && rawData.isNotEmpty) {
+      final peakPaint = Paint()
+        ..color = const Color(0xFF1565C0)
+        ..style = PaintingStyle.fill;
+      final firstTimestamp = rawData.first.timestamp;
+      final secondsPerTick = pow(10, timestampExponent).toDouble();
+
+      for (final p in rawData) {
+        if (!peakTimestamps.contains(p.timestamp)) continue;
+        final t = (p.timestamp - firstTimestamp) * secondsPerTick;
+        final px = toX(t);
+        final py = toY(p.value).clamp(0.0, chartHeight);
+        canvas.drawCircle(Offset(px, py), 3.5, peakPaint);
+      }
+    }
   }
 
   double _niceStep(double range, int targetTicks) {
