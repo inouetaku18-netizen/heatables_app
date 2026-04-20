@@ -83,6 +83,8 @@ class _CalmablesExperimentPageState extends State<CalmablesExperimentPage> {
   late TextEditingController _hrThresholdMinController;
   late TextEditingController _hrThresholdMaxController;
 
+  List<double> baselineHeartRateData = [];
+
   @override
   void initState() {
     super.initState();
@@ -194,7 +196,22 @@ class _CalmablesExperimentPageState extends State<CalmablesExperimentPage> {
   Future<void> _startMeasurement() async {
     if (_isMeasuring) return;
 
-    // PWMストリームの例（適宜調整してください）
+    // 心拍数を購読してデータを保存
+    //_heartRateSubscription?.cancel();
+    _heartRateSubscription = _heartRateStream?.listen((bpm) {
+      if (bpm != null && bpm.isFinite) {
+        setState(() {
+          heartRateHistory.add(bpm);
+          if (heartRateHistory.length > maxHistoryLength) {
+            heartRateHistory.removeAt(0);
+          }
+        });
+        if (_isMeasuring) {
+          baselineHeartRateData.add(bpm);
+        }
+      }
+    });
+
     final pwmStream = Stream<int>.periodic(
       const Duration(milliseconds: 200),
       (_) => calmablesSliderValue,
@@ -215,20 +232,8 @@ class _CalmablesExperimentPageState extends State<CalmablesExperimentPage> {
     // heartRateHistoryをクリアして再収集開始
     setState(() {
       heartRateHistory.clear();
+      baselineHeartRateData.clear();
       _averageHeartRateAtStop = null;
-    });
-
-    // 心拍数を購読してデータを保存
-    _heartRateSubscription?.cancel();
-    _heartRateSubscription = _heartRateStream?.listen((bpm) {
-      if (bpm != null && bpm.isFinite) {
-        setState(() {
-          heartRateHistory.add(bpm);
-          if (heartRateHistory.length > maxHistoryLength) {
-            heartRateHistory.removeAt(0);
-          }
-        });
-      }
     });
   }
 
@@ -237,8 +242,8 @@ class _CalmablesExperimentPageState extends State<CalmablesExperimentPage> {
 
     await _measurementManager.stopMeasurement();
 
-    _heartRateSubscription?.cancel();
-    _heartRateSubscription = null;
+    //_heartRateSubscription?.cancel();
+    //_heartRateSubscription = null;
 
     // 計測中の心拍数履歴から平均を計算
     if (heartRateHistory.isNotEmpty) {
