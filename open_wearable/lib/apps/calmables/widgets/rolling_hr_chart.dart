@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 class RollingHrChart extends StatefulWidget {
   final Stream<(int, double)> rawHrStream;
   final Stream<(int, double)> smoothedHrStream;
+  final Stream<int>? bleGapStream;
   final int timestampExponent;
   final int timeWindow;
 
@@ -15,6 +16,7 @@ class RollingHrChart extends StatefulWidget {
     super.key,
     required this.rawHrStream,
     required this.smoothedHrStream,
+    this.bleGapStream,
     required this.timestampExponent,
     this.timeWindow = 60,
   });
@@ -26,13 +28,16 @@ class RollingHrChart extends StatefulWidget {
 class _RollingHrChartState extends State<RollingHrChart> {
   final Queue<_Pt> _rawData = Queue();
   final Queue<_Pt> _smoothedData = Queue();
+  final Queue<int> _gapTimestamps = Queue();
   StreamSubscription? _rawSub;
   StreamSubscription? _smoothedSub;
+  StreamSubscription? _gapSub;
   Timer? _refreshTimer;
   bool _dirty = false;
 
   List<Offset>? _rawPoints;
   List<Offset>? _smoothedPoints;
+  List<double>? _gapXPositions;
   double _xMin = 0, _xMax = 60, _yMin = 50, _yMax = 120;
 
   static const _refreshInterval = Duration(milliseconds: 100);
@@ -54,9 +59,11 @@ class _RollingHrChartState extends State<RollingHrChart> {
   void didUpdateWidget(RollingHrChart oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.rawHrStream != widget.rawHrStream ||
-        oldWidget.smoothedHrStream != widget.smoothedHrStream) {
+        oldWidget.smoothedHrStream != widget.smoothedHrStream ||
+        oldWidget.bleGapStream != widget.bleGapStream) {
       _rawSub?.cancel();
       _smoothedSub?.cancel();
+      _gapSub?.cancel();
       _subscribe();
     }
   }
@@ -77,6 +84,17 @@ class _RollingHrChartState extends State<RollingHrChart> {
       _trim(_smoothedData, ts, ticksPerSecond);
       _dirty = true;
     });
+    if (widget.bleGapStream != null) {
+      _gapSub = widget.bleGapStream!.listen((ts) {
+        _gapTimestamps.addLast(ts);
+        // Trim old gap timestamps to time window.
+        final cutoff = ts - (widget.timeWindow * ticksPerSecond).round();
+        while (_gapTimestamps.isNotEmpty && _gapTimestamps.first < cutoff) {
+          _gapTimestamps.removeFirst();
+        }
+        _dirty = true;
+      });
+    }
   }
 
   void _trim(Queue<_Pt> q, int latestTs, double ticksPerSecond) {
@@ -89,6 +107,18 @@ class _RollingHrChartState extends State<RollingHrChart> {
   void _rebuild() {
     _rawPoints = _toOffsets(_rawData);
     _smoothedPoints = _toOffsets(_smoothedData);
+
+    // Convert gap timestamps to X positions (seconds from first data point).
+    final allData = [..._rawData, ..._smoothedData];
+    if (allData.isNotEmpty && _gapTimestamps.isNotEmpty) {
+      final firstTs = allData.map((p) => p.ts).reduce(min);
+      final sPerTick = pow(10, widget.timestampExponent).toDouble();
+      _gapXPositions = _gapTimestamps
+          .map((ts) => (ts - firstTs) * sPerTick)
+          .toList(growable: false);
+    } else {
+      _gapXPositions = null;
+    }
 
     // Compute shared Y range from both datasets.
     var yMinD = double.infinity;
@@ -146,6 +176,7 @@ class _RollingHrChartState extends State<RollingHrChart> {
         painter: _DualLinePainter(
           rawPoints: _rawPoints,
           smoothedPoints: _smoothedPoints,
+          gapXPositions: _gapXPositions,
           xMin: _xMin,
           xMax: _xMax,
           yMin: _yMin,
@@ -161,6 +192,7 @@ class _RollingHrChartState extends State<RollingHrChart> {
     _refreshTimer?.cancel();
     _rawSub?.cancel();
     _smoothedSub?.cancel();
+    _gapSub?.cancel();
     super.dispose();
   }
 }
@@ -168,11 +200,13 @@ class _RollingHrChartState extends State<RollingHrChart> {
 class _DualLinePainter extends CustomPainter {
   final List<Offset>? rawPoints;
   final List<Offset>? smoothedPoints;
+  final List<double>? gapXPositions;
   final double xMin, xMax, yMin, yMax;
 
   _DualLinePainter({
     required this.rawPoints,
     required this.smoothedPoints,
+    this.gapXPositions,
     required this.xMin,
     required this.xMax,
     required this.yMin,
@@ -195,6 +229,19 @@ class _DualLinePainter extends CustomPainter {
 
     double toX(double t) => leftMargin + ((t - xMin) / xRange) * chartWidth;
     double toY(double v) => chartHeight - ((v - yMin) / yRange) * chartHeight;
+
+    // BLE gap markers (yellow vertical lines spanning the full chart).
+    if (gapXPositions != null && gapXPositions!.isNotEmpty) {
+      final gapPaint = Paint()
+        ..color = const Color(0xCCFFB300)
+        ..strokeWidth = 2.0;
+      for (final gx in gapXPositions!) {
+        final px = toX(gx);
+        if (px >= leftMargin && px <= size.width) {
+          canvas.drawLine(Offset(px, 0), Offset(px, chartHeight), gapPaint);
+        }
+      }
+    }
 
     // Grid.
     final gridPaint = Paint()
@@ -284,6 +331,23 @@ class _DualLinePainter extends CustomPainter {
       textDirection: TextDirection.ltr,
     )..layout();
     smoothLabel.paint(canvas, Offset(smoothLegendX + 5, legendY));
+
+    // Gap legend.
+    if (gapXPositions != null && gapXPositions!.isNotEmpty) {
+      final gapLegendX = smoothLegendX + smoothLabel.width + 20;
+      canvas.drawLine(
+        Offset(gapLegendX, legendY + 2),
+        Offset(gapLegendX, legendY + 9),
+        Paint()
+          ..color = const Color(0xCCFFB300)
+          ..strokeWidth = 2.0,
+      );
+      final gapLabel = TextPainter(
+        text: TextSpan(text: ' BLE Gap', style: axisStyle),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      gapLabel.paint(canvas, Offset(gapLegendX + 3, legendY));
+    }
   }
 
   void _drawLine(Canvas canvas, List<Offset> pts,

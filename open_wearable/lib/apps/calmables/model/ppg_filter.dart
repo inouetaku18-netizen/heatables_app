@@ -428,6 +428,9 @@ class PpgFilter {
   final StreamController<List<int>> _peakTimestampsController =
       StreamController.broadcast();
 
+  final StreamController<int> _bleGapController =
+      StreamController.broadcast();
+
 
   final HrvLfhfCalculator _hrvLfhfCalculator = HrvLfhfCalculator();
 
@@ -530,6 +533,9 @@ class PpgFilter {
   Stream<List<int>> get peakTimestampsStream =>
       _peakTimestampsController.stream;
 
+  /// Emits the sensor timestamp at which a BLE gap (>2 s) was detected.
+  Stream<int> get bleGapStream => _bleGapController.stream;
+
 
   void dispose() {
     final motionSubscription = _motionSubscription;
@@ -545,6 +551,7 @@ class PpgFilter {
     }
     _temperatureStreamController.close();
     _peakTimestampsController.close();
+    _bleGapController.close();
   }
 
   Stream<_MotionAwareSample> get _sampleStream {
@@ -619,14 +626,44 @@ class PpgFilter {
       });
     }
     _MotionAwareSample? _lastValidSample;
+    var _sampleCount = 0;
+    var _nanCount = 0;
+    var _lastSampleWallTime = DateTime.now();
+    var _lastGapLogTime = DateTime.now();
 
     return inputStream.map((sample) {
+      final now = DateTime.now();
+      final wallGapMs = now.difference(_lastSampleWallTime).inMilliseconds;
+      _lastSampleWallTime = now;
+      _sampleCount++;
+
+      // Monitor: detect BLE gaps (no sample for >2s wall-clock time).
+      if (wallGapMs > 2000 && _sampleCount > 10) {
+        debugPrint('⚠️ PPG MONITOR: BLE gap detected — '
+            'no sample for ${wallGapMs}ms (wall-clock), '
+            'total samples=$_sampleCount, nanCount=$_nanCount');
+        _bleGapController.add(sample.timestamp);
+      }
+
+      // Periodic summary every 10s.
+      if (now.difference(_lastGapLogTime).inSeconds >= 10) {
+        debugPrint('📊 PPG MONITOR: alive — '
+            '${_sampleCount} samples total, '
+            '${_nanCount} NaN/Inf dropped, '
+            'lastGap=${wallGapMs}ms');
+        _lastGapLogTime = now;
+      }
+
       // Always use green channel.
       final selectedOpticalSignal = sample.green;
 
       // Guard: skip non-finite BLE values to prevent permanent NaN
       // poisoning of filter states (IIR filters never recover from NaN).
       if (!selectedOpticalSignal.isFinite || !sample.ambient.isFinite) {
+        _nanCount++;
+        debugPrint('⚠️ PPG MONITOR: NaN/Inf sample dropped — '
+            'green=${sample.green}, ambient=${sample.ambient}, '
+            'nanCount=$_nanCount');
         return _lastValidSample ??
             _MotionAwareSample(
               timestamp: sample.timestamp,
@@ -775,11 +812,22 @@ class PpgFilter {
     final evaluationPeriodTicks = max(1.0, ticksPerSecond);
     final buffer = <_MotionAwareSample>[];
     var lastEvaluationTick = double.negativeInfinity;
+    var _vitalsEvalCount = 0;
+    var _lastVitalsWallTime = DateTime.now();
 
     PpgSignalQuality? previousQuality;
     double? lastValidHeartRate;
 
     await for (final sample in _sampleStream) {
+      // Monitor: detect if vitals stream receives samples.
+      final vNow = DateTime.now();
+      final vGapMs = vNow.difference(_lastVitalsWallTime).inMilliseconds;
+      if (vGapMs > 3000 && _vitalsEvalCount > 0) {
+        debugPrint('⚠️ VITALS MONITOR: sample gap in vitals stream — '
+            '${vGapMs}ms since last sample, '
+            'buffer=${buffer.length}, evals=$_vitalsEvalCount');
+      }
+      _lastVitalsWallTime = vNow;
       buffer.add(sample);
       final cutoff = sample.timestamp - windowDurationTicks;
       while (buffer.isNotEmpty && buffer.first.timestamp < cutoff) {
@@ -827,7 +875,16 @@ class PpgFilter {
         maxBeatIntervalSec: _maxBeatIntervalSec,
       );
 
+      final computeStopwatch = Stopwatch()..start();
       final result = await compute(_evaluateVitalsIsolated, computeInput);
+      computeStopwatch.stop();
+      _vitalsEvalCount++;
+
+      if (computeStopwatch.elapsedMilliseconds > 500) {
+        debugPrint('⚠️ VITALS MONITOR: compute() slow — '
+            '${computeStopwatch.elapsedMilliseconds}ms, '
+            'bufferSize=${buffer.length}');
+      }
 
       // Emit detected peak timestamps for chart overlays.
       _peakTimestampsController.add(result.peakTimestamps);
@@ -894,11 +951,11 @@ class PpgFilter {
         switch (quality) {
           case PpgSignalQuality.good:
             //_hrProcessNoise = 0.10;
-            _hrMeasurementNoise = 1.0;
+            _hrMeasurementNoise = 0.5;
             break;
           case PpgSignalQuality.fair:
             //_hrProcessNoise = 0.01;
-            _hrMeasurementNoise = 5.0;
+            _hrMeasurementNoise = 3.0;
             break;
           case PpgSignalQuality.bad:
             //_hrProcessNoise = 0.005;

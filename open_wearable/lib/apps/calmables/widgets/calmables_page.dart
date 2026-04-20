@@ -47,6 +47,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
   Stream<List<int>>? _peakTimestampsStream;
   Stream<(int, double)>? _rawHrChartStream;
   Stream<(int, double)>? _smoothedHrChartStream;
+  Stream<int>? _bleGapStream;
   Stream<double?>? _heartRateStream;
   Stream<double?>? _hrvStream;
   Stream<double?>? _hrvLfhfStream;
@@ -305,6 +306,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
       _peakTimestampsStream = ppgFilter.peakTimestampsStream;
       _rawHrChartStream = ppgFilter.rawHeartRateChartStream;
       _smoothedHrChartStream = ppgFilter.smoothedHeartRateChartStream;
+      _bleGapStream = ppgFilter.bleGapStream;
       _heartRateStream = ppgFilter.heartRateStream;
       _hrvStream = ppgFilter.hrvStream;
       _hrvLfhfStream = ppgFilter.hrvLfhfStream;
@@ -932,6 +934,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
                     child: RollingHrChart(
                       rawHrStream: _rawHrChartStream!,
                       smoothedHrStream: _smoothedHrChartStream!,
+                      bleGapStream: _bleGapStream,
                       timestampExponent:
                           widget.ppgSensor.timestampExponent,
                       timeWindow: 60,
