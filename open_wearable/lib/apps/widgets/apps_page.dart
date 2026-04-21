@@ -275,7 +275,7 @@ final List<AppInfo> _apps = [
   ),
   AppInfo(
     logoPath: "lib/apps/calmables_experiment/assets/logo.png",
-    title: "Calmables for experiment",
+    title: "Calmables for Experiment",
     description: "Calmables app for experiment",
     supportedDevices: _calmablesSupportedDevices,
     accentColor: _appAccentColor,

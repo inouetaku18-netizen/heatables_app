@@ -80,8 +80,10 @@ class _CalmablesExperimentPageState extends State<CalmablesExperimentPage> {
   int hrThresholdMin = 70;
   int hrThresholdMax = 120;
 
-  late TextEditingController _hrThresholdMinController;
-  late TextEditingController _hrThresholdMaxController;
+  late TextEditingController _minController;
+  late TextEditingController _maxController;
+  late FocusNode _minFocusNode;
+  late FocusNode _maxFocusNode;
 
   List<double> baselineHeartRateData = [];
 
@@ -100,10 +102,39 @@ class _CalmablesExperimentPageState extends State<CalmablesExperimentPage> {
       });
     };
 
-    _hrThresholdMinController =
-        TextEditingController(text: hrThresholdMin.toString());
-    _hrThresholdMaxController =
-        TextEditingController(text: hrThresholdMax.toString());
+    _minController = TextEditingController(text: hrThresholdMin.toString());
+    _maxController = TextEditingController(text: hrThresholdMax.toString());
+
+    _minFocusNode = FocusNode();
+    _maxFocusNode = FocusNode();
+
+    _minFocusNode.addListener(() {
+      if (!_minFocusNode.hasFocus) {
+        final val = int.tryParse(_minController.text);
+        if (val != null && val >= 40 && val <= hrThresholdMax) {
+          setState(() {
+            hrThresholdMin = val;
+            _minController.text = hrThresholdMin.toString();
+          });
+        } else {
+          _minController.text = hrThresholdMin.toString();
+        }
+      }
+    });
+
+    _maxFocusNode.addListener(() {
+      if (!_maxFocusNode.hasFocus) {
+        final val = int.tryParse(_maxController.text);
+        if (val != null && val <= 255 && val >= hrThresholdMin) {
+          setState(() {
+            hrThresholdMax = val;
+            _maxController.text = hrThresholdMax.toString();
+          });
+        } else {
+          _maxController.text = hrThresholdMax.toString();
+        }
+      }
+    });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
@@ -138,6 +169,7 @@ class _CalmablesExperimentPageState extends State<CalmablesExperimentPage> {
 
   @override
   void dispose() {
+    sendDataToCalmables([0]);
     final configProvider = _sensorConfigProvider;
     _heartRateSubscription?.cancel();
     _uiUpdateTimer?.cancel();
@@ -145,8 +177,10 @@ class _CalmablesExperimentPageState extends State<CalmablesExperimentPage> {
       unawaited(configProvider.turnOffAllSensors());
     }
     _ppgFilter?.dispose();
-    _hrThresholdMinController.dispose();
-    _hrThresholdMaxController.dispose();
+    _minController.dispose();
+    _maxController.dispose();
+    _minFocusNode.dispose();
+    _maxFocusNode.dispose();
     super.dispose();
   }
 
@@ -662,8 +696,8 @@ class _CalmablesExperimentPageState extends State<CalmablesExperimentPage> {
     final displayText = _isMeasuring
         ? 'Elapsed Time: $_elapsedTimeStr'
         : _averageHeartRateAtStop != null
-            ? 'Average Heart Rate: ${_averageHeartRateAtStop!.toStringAsFixed(1)} BPM'
-            : 'Average Heart Rate: --';
+            ? 'Baseline Heart Rate: ${_averageHeartRateAtStop!.toStringAsFixed(1)} BPM'
+            : 'Baseline Heart Rate: --';
 
     return Card(
       child: Padding(
@@ -905,7 +939,8 @@ class _CalmablesExperimentPageState extends State<CalmablesExperimentPage> {
                       children: [
                         Expanded(
                           child: TextField(
-                            controller: _hrThresholdMinController,
+                            controller: _minController,
+                            focusNode: _minFocusNode,
                             keyboardType: TextInputType.number,
                             decoration: const InputDecoration(
                               labelText: 'HR Threshold Min',
@@ -914,13 +949,19 @@ class _CalmablesExperimentPageState extends State<CalmablesExperimentPage> {
                               contentPadding: EdgeInsets.symmetric(
                                   vertical: 8, horizontal: 12),
                             ),
-                            onChanged: (value) {
+                            onSubmitted: (value) {
                               final val = int.tryParse(value);
-                              if (val != null && val >= 0 && val <= 255) {
+                              if (val != null &&
+                                  val >= 40 &&
+                                  val <= hrThresholdMax) {
                                 setState(() {
                                   hrThresholdMin = val;
-                                  // 必要に応じてロジックに反映
+                                  _minController.text =
+                                      hrThresholdMin.toString();
                                 });
+                                FocusScope.of(context).unfocus();
+                              } else {
+                                _minController.text = hrThresholdMin.toString();
                               }
                             },
                           ),
@@ -928,7 +969,8 @@ class _CalmablesExperimentPageState extends State<CalmablesExperimentPage> {
                         const SizedBox(width: 12),
                         Expanded(
                           child: TextField(
-                            controller: _hrThresholdMaxController,
+                            controller: _maxController,
+                            focusNode: _maxFocusNode,
                             keyboardType: TextInputType.number,
                             decoration: const InputDecoration(
                               labelText: 'HR Threshold Max',
@@ -939,11 +981,17 @@ class _CalmablesExperimentPageState extends State<CalmablesExperimentPage> {
                             ),
                             onChanged: (value) {
                               final val = int.tryParse(value);
-                              if (val != null && val >= 0 && val <= 255) {
+                              if (val != null &&
+                                  val <= 255 &&
+                                  val >= hrThresholdMin) {
                                 setState(() {
                                   hrThresholdMax = val;
-                                  // 必要に応じてロジックに反映
+                                  _maxController.text =
+                                      hrThresholdMax.toString();
                                 });
+                                FocusScope.of(context).unfocus();
+                              } else {
+                                _maxController.text = hrThresholdMax.toString();
                               }
                             },
                           ),

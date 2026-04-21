@@ -68,6 +68,17 @@ class _CalmablesPageState extends State<CalmablesPage> {
   List<double> hrvHistory = [];
   static const int maxHistoryLength = 5;
 
+  bool _isMeasuring = false;
+  String _elapsedTimeStr = "00:00";
+  double? _averageHeartRateAtStop;
+  List<double> baselineHeartRateData = [];
+
+  Timer? _baselineTimer;
+  int _elapsedSeconds = 0;
+
+  int hrThresholdMin = 70;
+  int hrThresholdMax = 120;
+
   @override
   void initState() {
     super.initState();
@@ -88,6 +99,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
 
   @override
   void dispose() {
+    sendDataToCalmables([0]);
     final configProvider = _sensorConfigProvider;
     _heartRateSubscription?.cancel();
     if (configProvider != null) {
@@ -97,7 +109,61 @@ class _CalmablesPageState extends State<CalmablesPage> {
     super.dispose();
   }
 
-  void _onModeChanged(ControlMode mode) {
+  Future<void> _startMeasurement() async {
+    if (_isMeasuring) return;
+
+    setState(() {
+      _isMeasuring = true;
+      _elapsedSeconds = 0;
+      _elapsedTimeStr = "00:00";
+      baselineHeartRateData.clear();
+      _averageHeartRateAtStop = null;
+    });
+
+    // UI更新用タイマー
+    _baselineTimer?.cancel();
+    _baselineTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      _elapsedSeconds++;
+      final minutes = (_elapsedSeconds ~/ 60).toString().padLeft(2, '0');
+      final seconds = (_elapsedSeconds % 60).toString().padLeft(2, '0');
+      if (mounted) {
+        setState(() {
+          _elapsedTimeStr = "$minutes:$seconds";
+        });
+      }
+    });
+
+    // 心拍数購読開始（重複防止のため既に購読中ならキャンセル）
+    _heartRateSubscription?.cancel();
+    _heartRateSubscription = _heartRateStream?.listen((bpm) {
+      if (bpm != null && bpm.isFinite) {
+        setState(() {
+          baselineHeartRateData.add(bpm);
+        });
+      }
+    });
+  }
+
+  Future<void> _stopMeasurement() async {
+    if (!_isMeasuring) return;
+
+    _baselineTimer?.cancel();
+    _baselineTimer = null;
+    _heartRateSubscription?.cancel();
+    _heartRateSubscription = null;
+
+    double? average;
+    if (baselineHeartRateData.isNotEmpty) {
+      final sum = baselineHeartRateData.reduce((a, b) => a + b);
+      average = sum / baselineHeartRateData.length;
+    }
+    setState(() {
+      _isMeasuring = false;
+      _averageHeartRateAtStop = average;
+    });
+  }
+
+  void _onModeChanged(ControlMode mode) async {
     if (_controlMode == mode) return;
     setState(() {
       _controlMode = mode;
@@ -108,18 +174,37 @@ class _CalmablesPageState extends State<CalmablesPage> {
 
     if (mode == ControlMode.autopilot) {
       // Autopilot画面へ遷移
-      Navigator.of(context).push(
+      final result = await Navigator.of(context).push<Map<String, int>>(
         MaterialPageRoute(
           builder: (context) => AutopilotPage(
             heartRateStream: _heartRateStream,
             initialPwmValue: calmablesSliderValue,
+            initialHrThresholdMin: _averageHeartRateAtStop != null
+                ? _averageHeartRateAtStop!.round()
+                : hrThresholdMin,
+            initialHrThresholdMax: hrThresholdMax,
+            currentState: ControllerState.idle,
+            signalQualityStream: _signalQualityStream,
           ),
         ),
       );
+
+      if (result != null) {
+        setState(() {
+          hrThresholdMin = result['min'] ?? hrThresholdMin;
+          hrThresholdMax = result['max'] ?? hrThresholdMax;
+          calmablesSliderValue = 0;
+        });
+      }
+
       // Autopilot開始：心拍数ストリーム監視してPWM計算＆送信
       _heartRateSubscription = _heartRateStream?.listen((bpm) {
-        if (bpm != null && bpm.isFinite) {
-          final pwmValue = AutopilotController.pwmFromHeartRate(bpm);
+        if (bpm != null && bpm.isFinite && hrThresholdMin < hrThresholdMax) {
+          final pwmValue = AutopilotController.pwmFromHeartRate(
+            bpm,
+            hrThresholdMin.toDouble(),
+            hrThresholdMax.toDouble(),
+          );
           sendDataToCalmables([pwmValue]);
           setState(() {
             calmablesSliderValue = pwmValue;
@@ -504,6 +589,26 @@ class _CalmablesPageState extends State<CalmablesPage> {
     return PlatformScaffold(
       appBar: PlatformAppBar(
         title: PlatformText('Calmables Demo'),
+        trailingActions: [
+          IconButton(
+            icon: Icon(Icons.refresh),
+            tooltip: 'Reset',
+            onPressed: () {
+              setState(() {
+                // AutopilotモードならManualに切り替え
+                if (_controlMode == ControlMode.autopilot) {
+                  _onModeChanged(ControlMode.manual);
+                }
+                hrThresholdMin = 70;
+                hrThresholdMax = 120;
+                calmablesSliderValue = 0;
+                _averageHeartRateAtStop = null;
+                pwmHistory.clear();
+              });
+              sendDataToCalmables([0]);
+            },
+          ),
+        ],
       ),
       body: displayPpgSignalStream == null ||
               heartRateStream == null ||
@@ -524,6 +629,58 @@ class _CalmablesPageState extends State<CalmablesPage> {
     );
   }
 
+  Widget _buildBaselineControl() {
+    final displayText = _isMeasuring
+        ? 'Elapsed Time: $_elapsedTimeStr'
+        : _averageHeartRateAtStop != null
+            ? 'Baseline Heart Rate: ${_averageHeartRateAtStop!.toStringAsFixed(1)} BPM'
+            : 'Baseline Heart Rate: --';
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            Text(displayText, style: Theme.of(context).textTheme.headlineSmall),
+            const SizedBox(height: 6),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                ElevatedButton(
+                  onPressed: _isMeasuring
+                      ? null
+                      : () async => await _startMeasurement(),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: !_isMeasuring
+                        ? const Color(0xFF009682)
+                        : Colors.grey.shade300,
+                    foregroundColor:
+                        !_isMeasuring ? Colors.white : Colors.black87,
+                  ),
+                  child: const Text('Start Baseline'),
+                ),
+                const SizedBox(width: 16),
+                ElevatedButton(
+                  onPressed: _isMeasuring
+                      ? () async => await _stopMeasurement()
+                      : null,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _isMeasuring
+                        ? const Color(0xFF009682)
+                        : Colors.grey.shade300,
+                    foregroundColor:
+                        _isMeasuring ? Colors.white : Colors.black87,
+                  ),
+                  child: const Text('Stop Baseline'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildContent(
     BuildContext context,
     Stream<(int, double)> displayPpgSignalStream,
@@ -539,7 +696,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
         DeviceRow(
           group: WearableDisplayGroup.single(wearable: widget.wearable),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 6),
         StreamBuilder<PpgSignalQuality>(
           stream: signalQualityStream,
           builder: (context, qualitySnapshot) {
@@ -579,7 +736,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
             );
           },
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 6),
         StreamBuilder<double?>(
           stream: heartRateStream,
           builder: (context, snapshot) {
@@ -637,7 +794,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
             );
           },
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 6),
         _SignalPanelCard(
           title: 'Filtered PPG (0.5-3.2 Hz)',
           subtitle: '',
@@ -648,7 +805,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
           fixedMeasureMax: null,
         ),
         //_buildScanSection(),
-        const SizedBox(height: 24), // 少し余白
+        const SizedBox(height: 6), // 少し余白
         Card(
           child: Padding(
             padding: const EdgeInsets.all(12),
@@ -694,7 +851,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 6),
                 if (_controlMode == ControlMode.manual) ...[
                   Slider(
                     value: calmablesSliderValue.toDouble(),
@@ -720,6 +877,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
             ),
           ),
         ),
+        _buildBaselineControl(),
       ],
     );
   }
@@ -843,7 +1001,7 @@ class _SignalPanelCard extends StatelessWidget {
             ),
             const SizedBox(height: 10),
             SizedBox(
-              height: 88,
+              height: 70,
               child: RollingChart(
                 dataSteam: chartStream,
                 timestampExponent: timestampExponent,
