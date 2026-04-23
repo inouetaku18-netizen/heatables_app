@@ -34,22 +34,28 @@ class PpgOpticalSample {
 
 class PpgVitals {
   final double? heartRateBpm;
+  final double? rawHeartRateBpm;
   final double? hrvRmssdMs;
   final double? hrvLfhfRatio;
   final PpgSignalQuality signalQuality;
+  final int? timestamp;
 
   const PpgVitals({
     required this.heartRateBpm,
+    this.rawHeartRateBpm,
     required this.hrvRmssdMs,
     required this.hrvLfhfRatio,
     required this.signalQuality,
+    this.timestamp,
   });
 
   const PpgVitals.invalid({
     this.signalQuality = PpgSignalQuality.unavailable,
   })  : heartRateBpm = null,
+        rawHeartRateBpm = null,
         hrvRmssdMs = null,
-        hrvLfhfRatio = null;
+        hrvLfhfRatio = null,
+        timestamp = null;
 }
 
 class PpgMotionSample {
@@ -174,6 +180,18 @@ class PpgFilter {
 
   Stream<double?> get heartRateStream =>
       _metricsStream.map((vitals) => vitals.heartRateBpm);
+
+  Stream<(int, double)> get smoothedHeartRateChartStream => _metricsStream
+      .where(
+        (vitals) => vitals.heartRateBpm != null && vitals.timestamp != null,
+      )
+      .map((vitals) => (vitals.timestamp!, vitals.heartRateBpm!));
+
+  Stream<(int, double)> get rawHeartRateChartStream => _metricsStream
+      .where(
+        (vitals) => vitals.rawHeartRateBpm != null && vitals.timestamp != null,
+      )
+      .map((vitals) => (vitals.timestamp!, vitals.rawHeartRateBpm!));
 
   Stream<double?> get hrvStream =>
       _metricsStream.map((vitals) => vitals.hrvRmssdMs);
@@ -795,7 +813,8 @@ class PpgFilter {
           if (peakHeartRate != null && peakHeartRate.isFinite) {
             lastValidHeartRate = peakHeartRate;
             debugPrint(
-                'Signal quality degraded: hold heart rate $lastValidHeartRate');
+              'Signal quality degraded: hold heart rate $lastValidHeartRate',
+            );
           }
         }
 
@@ -807,7 +826,8 @@ class PpgFilter {
             _hrEstimate = lastValidHeartRate;
             _hrCovariance = 1.0;
             debugPrint(
-                'Signal quality improved: reset Kalman filter HR estimate to $lastValidHeartRate');
+              'Signal quality improved: reset Kalman filter HR estimate to $lastValidHeartRate',
+            );
             // 保持した心拍数は使い切ったのでクリアしておく
             lastValidHeartRate = null;
           }
@@ -857,9 +877,11 @@ class PpgFilter {
 
       yield PpgVitals(
         heartRateBpm: smoothedHeartRate,
+        rawHeartRateBpm: peakHeartRate,
         hrvRmssdMs: smoothedHrvMs,
         hrvLfhfRatio: lfhfRatio,
         signalQuality: classifiedQuality,
+        timestamp: sample.timestamp,
       );
 
       previousQuality = classifiedQuality;

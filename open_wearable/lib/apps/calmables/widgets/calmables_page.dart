@@ -12,6 +12,7 @@ import 'package:open_wearable/apps/calmables/model/calmables_pwm.dart';
 import 'package:open_wearable/apps/calmables/model/sensor_data_logger.dart';
 import 'package:open_wearable/apps/calmables/model/hr_calibration.dart';
 import 'package:open_wearable/apps/calmables/widgets/rowling_chart.dart';
+import 'package:open_wearable/apps/calmables/widgets/rolling_hr_chart.dart';
 import 'package:open_wearable/apps/calmables/widgets/autopilot_page.dart';
 import 'package:open_wearable/models/wearable_display_group.dart';
 import 'package:open_wearable/view_models/sensor_configuration_provider.dart';
@@ -43,6 +44,8 @@ enum ControlMode { manual, autopilot }
 class _CalmablesPageState extends State<CalmablesPage> {
   PpgFilter? _ppgFilter;
   Stream<(int, double)>? _displayPpgSignalStream;
+  Stream<(int, double)>? _rawHrChartStream;
+  Stream<(int, double)>? _smoothedHrChartStream;
 
   Stream<double?>? _heartRateStream;
   Stream<double?>? _hrvStream;
@@ -85,9 +88,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
         return;
       }
 
-      calmablesDevice = widget.connectedDevices
-          .cast<Wearable?>()
-          .firstWhere(
+      calmablesDevice = widget.connectedDevices.cast<Wearable?>().firstWhere(
             (device) => device!.name.toLowerCase().contains('calmables'),
             orElse: () => null,
           );
@@ -174,7 +175,8 @@ class _CalmablesPageState extends State<CalmablesPage> {
 
       debugPrint('writeManager: $writeManager');
       debugPrint(
-          'Device ID: $deviceId, Service UUID: $serviceUuid, Characteristic UUID: $characteristicUuid');
+        'Device ID: $deviceId, Service UUID: $serviceUuid, Characteristic UUID: $characteristicUuid',
+      );
       debugPrint('Data to send: $data');
 
       if (writeManager != null) {
@@ -223,7 +225,8 @@ class _CalmablesPageState extends State<CalmablesPage> {
     }
 
     debugPrint(
-        'opticalTemperatureSensor is ${opticalTemperatureSensor == null ? "null" : "not null"}');
+      'opticalTemperatureSensor is ${opticalTemperatureSensor == null ? "null" : "not null"}',
+    );
 
     if (opticalTemperatureSensor != null) {
       _configureSensorForStreaming(
@@ -299,6 +302,8 @@ class _CalmablesPageState extends State<CalmablesPage> {
     }
     setState(() {
       _displayPpgSignalStream = ppgFilter.displaySignalStream;
+      _rawHrChartStream = ppgFilter.rawHeartRateChartStream;
+      _smoothedHrChartStream = ppgFilter.smoothedHeartRateChartStream;
       _heartRateStream = ppgFilter.heartRateStream;
       _hrvStream = ppgFilter.hrvStream;
       _hrvLfhfStream = ppgFilter.hrvLfhfStream;
@@ -593,9 +598,8 @@ class _CalmablesPageState extends State<CalmablesPage> {
                       backgroundColor: _dataLogger.isLogging
                           ? Colors.red
                           : Colors.grey.shade300,
-                      foregroundColor: _dataLogger.isLogging
-                          ? Colors.white
-                          : Colors.black54,
+                      foregroundColor:
+                          _dataLogger.isLogging ? Colors.white : Colors.black54,
                     ),
                   ),
                 ),
@@ -622,9 +626,8 @@ class _CalmablesPageState extends State<CalmablesPage> {
                 Icon(
                   Icons.tune_rounded,
                   size: 18,
-                  color: isCalibrating
-                      ? Colors.orange
-                      : const Color(0xFF009682),
+                  color:
+                      isCalibrating ? Colors.orange : const Color(0xFF009682),
                 ),
                 const SizedBox(width: 6),
                 Text(
@@ -719,9 +722,8 @@ class _CalmablesPageState extends State<CalmablesPage> {
                 ),
                 label: Text(isCalibrating ? 'Stop' : 'Calibrate'),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: isCalibrating
-                      ? Colors.orange
-                      : const Color(0xFF009682),
+                  backgroundColor:
+                      isCalibrating ? Colors.orange : const Color(0xFF009682),
                   foregroundColor: Colors.white,
                 ),
               ),
@@ -887,6 +889,52 @@ class _CalmablesPageState extends State<CalmablesPage> {
           fixedMeasureMin: null,
           fixedMeasureMax: null,
         ),
+        const SizedBox(height: 12),
+        if (_rawHrChartStream != null && _smoothedHrChartStream != null)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.favorite_rounded,
+                        size: 18,
+                        color: Color(0xFF009682),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Heart Rate (60s)',
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Grau: RR-Intervall HR · Rot: Kalman-gefiltert',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: const Color(0xFF009682),
+                        ),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    height: 120,
+                    child: RollingHrChart(
+                      rawHrStream: _rawHrChartStream!,
+                      smoothedHrStream: _smoothedHrChartStream!,
+                      timestampExponent: widget.ppgSensor.timestampExponent,
+                      timeWindow: 60,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
 
         //_buildScanSection(),
         const SizedBox(height: 12),
