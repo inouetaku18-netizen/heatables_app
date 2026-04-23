@@ -43,6 +43,7 @@ enum ControlMode { manual, autopilot }
 class _CalmablesPageState extends State<CalmablesPage> {
   PpgFilter? _ppgFilter;
   Stream<(int, double)>? _displayPpgSignalStream;
+
   Stream<double?>? _heartRateStream;
   Stream<double?>? _hrvStream;
   Stream<double?>? _hrvLfhfStream;
@@ -878,14 +879,15 @@ class _CalmablesPageState extends State<CalmablesPage> {
         ),
         const SizedBox(height: 12),
         _SignalPanelCard(
-          title: 'Filtered PPG (0.5-3.2 Hz)',
-          subtitle: '',
+          title: 'PPG mit Motion Compensation (0.5–8 Hz)',
+          subtitle: 'Suppressor + NLMS aktiv',
           icon: Icons.show_chart_rounded,
           chartStream: displayPpgSignalStream,
           timestampExponent: widget.ppgSensor.timestampExponent,
           fixedMeasureMin: null,
           fixedMeasureMax: null,
         ),
+
         //_buildScanSection(),
         const SizedBox(height: 12),
         _buildLoggingCard(context),

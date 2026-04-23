@@ -103,6 +103,7 @@ class PpgFilter {
   Stream<_MotionAwareSample>? _processedStream;
   Stream<(int, double)>? _rawSignalStream;
   Stream<(int, double)>? _displaySignalStream;
+  Stream<(int, double)>? _motionCompSignalStream;
   Stream<PpgVitals>? _vitalsStream;
 
   double? _latestOpticalTemperatureCelsius;
@@ -158,6 +159,17 @@ class PpgFilter {
         .map((sample) => (sample.timestamp, sample.rawGreen))
         .asBroadcastStream();
     return _rawSignalStream!;
+  }
+
+  /// Signal ohne Motion-Kompensation (nur BandPass), für Vergleich.
+  Stream<(int, double)> get motionCompensatedDisplaySignalStream {
+    if (_motionCompSignalStream != null) {
+      return _motionCompSignalStream!;
+    }
+    _motionCompSignalStream = _sampleStream
+        .map((sample) => (sample.timestamp, sample.motionCompensatedSignal))
+        .asBroadcastStream();
+    return _motionCompSignalStream!;
   }
 
   Stream<double?> get heartRateStream =>
@@ -217,7 +229,13 @@ class PpgFilter {
     var lastFiniteSample = 0.0;
 
     return inputStream.map((sample) {
-      selectedChannel ??= _pickStableDisplayChannel(sample);
+      if (selectedChannel == null) {
+        selectedChannel = _pickStableDisplayChannel(sample);
+        const names = ['Green', 'Red', 'IR'];
+        debugPrint(
+          '📡 PPG DisplayChannel: ${names[selectedChannel!]}',
+        );
+      }
       var selectedOpticalSignal = _readDisplayChannel(
         sample,
         selectedChannel!,
@@ -284,6 +302,12 @@ class PpgFilter {
       sampleFreqHz: safeSampleFreq,
       timeConstantSeconds: 3.2,
     );
+    // Vergleichspfad: ohne Motion-Kompensation
+    final normalizerClean = _BoundedSignalNormalizer();
+    final displayDetrenderClean = _DisplayBaselineDetrender(
+      sampleFreqHz: safeSampleFreq,
+      timeConstantSeconds: 3.2,
+    );
 
     if (motionStream != null) {
       _motionSubscription = motionStream!.listen((event) {
@@ -318,6 +342,12 @@ class PpgFilter {
         motionLevel: motionSuppressor.motionLevel,
       );
       final displaySignal = displayDetrender.filter(bounded);
+
+      // Vergleichspfad: direkt nach BandPass, ohne Suppressor
+      final cleanSignal = displayDetrenderClean.filter(
+        normalizerClean.filter(bandPassed, motionLevel: 0),
+      );
+
       return _MotionAwareSample(
         timestamp: sample.timestamp,
         rawGreen: selectedOpticalSignal,
@@ -327,6 +357,7 @@ class PpgFilter {
         signal: bounded,
         displaySignal: displaySignal,
         motionLevel: motionSuppressor.motionLevel,
+        motionCompensatedSignal: cleanSignal,
       );
     });
   }
@@ -640,11 +671,11 @@ class PpgFilter {
       lastEvaluationTick = sample.timestamp.toDouble();
 
       //debugPrint('rawRed: ${sample.rawRed}, rawIr: ${sample.rawIr}');
-      if (sample.rawIr >= 9.3e6 || (sample.rawRed - sample.rawIr).abs() > 1e5) {
+      /*if (sample.rawIr >= 9.3e6 || (sample.rawRed - sample.rawIr).abs() > 1e5) {
         yield const PpgVitals.invalid(
             signalQuality: PpgSignalQuality.unavailable);
         continue;
-      }
+      }*/
 
       if (buffer.length < 20 ||
           (buffer.last.timestamp - buffer.first.timestamp) <
@@ -821,7 +852,7 @@ class PpgFilter {
           _hrvLfhfCalculator.addIbi(ibiMs);
         }
 
-        lfhfRatio = _hrvLfhfCalculator.computeLfhfRatio();
+        lfhfRatio = _hrvLfhfCalculator.compute()?.lfHfRatio;
       }
 
       yield PpgVitals(
@@ -844,7 +875,6 @@ class _AdaptiveOpticalChannelSelector {
   double _energyGreen = 0;
   double _energyRed = 0;
   double _energyIr = 0;
-
   double select(PpgOpticalSample sample) {
     if (!_isInitialized) {
       _isInitialized = true;
@@ -878,7 +908,8 @@ class _AdaptiveOpticalChannelSelector {
       return sample.green;
     }
     if (sample.red.isFinite && sample.ir.isFinite) {
-      return sample.red.abs() >= sample.ir.abs() ? sample.red : sample.ir;
+      final useRed = sample.red.abs() >= sample.ir.abs();
+      return useRed ? sample.red : sample.ir;
     }
     if (sample.red.isFinite) {
       return sample.red;
@@ -903,6 +934,7 @@ class _MotionAwareSample {
   final double signal;
   final double displaySignal;
   final double motionLevel;
+  final double motionCompensatedSignal;
 
   const _MotionAwareSample({
     required this.timestamp,
@@ -913,6 +945,7 @@ class _MotionAwareSample {
     required this.signal,
     required this.displaySignal,
     required this.motionLevel,
+    this.motionCompensatedSignal = 0,
   });
 }
 
