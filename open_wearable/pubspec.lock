@@ -523,9 +523,11 @@ packages:
   open_earable_flutter:
     dependency: "direct main"
     description:
-      path: "C:/src/open_earable_flutter-main"
-      relative: false
-    source: path
+      path: "."
+      ref: "feature/my-change"
+      resolved-ref: a9b32f263ff1a901c0d48f22d45bbbfc07a23290
+      url: "https://github.com/inouetaku18-netizen/heatables_ble.git"
+    source: git
     version: "2.3.4"
   open_file:
     dependency: "direct main"
