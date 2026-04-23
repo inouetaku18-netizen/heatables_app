@@ -93,6 +93,8 @@ class PpgFilter {
 
   final StreamController<double?> _temperatureStreamController =
       StreamController.broadcast(); //追加
+  final StreamController<List<int>> _peakTimestampsController =
+      StreamController<List<int>>.broadcast();
 
   final HrvLfhfCalculator _hrvLfhfCalculator = HrvLfhfCalculator();
 
@@ -153,7 +155,9 @@ class PpgFilter {
     if (_displaySignalStream != null) {
       return _displaySignalStream!;
     }
-    _displaySignalStream = _createLiveDisplaySignalStream().asBroadcastStream();
+    _displaySignalStream = _sampleStream
+        .map((sample) => (sample.timestamp, sample.displaySignal))
+        .asBroadcastStream();
     return _displaySignalStream!;
   }
 
@@ -203,6 +207,8 @@ class PpgFilter {
       _metricsStream.map((vitals) => vitals.signalQuality).distinct();
 
   Stream<double?> get temperatureStream => _temperatureStreamController.stream;
+  Stream<List<int>> get peakTimestampsStream =>
+      _peakTimestampsController.stream;
 
   void dispose() {
     final motionSubscription = _motionSubscription;
@@ -217,6 +223,7 @@ class PpgFilter {
       unawaited(temperatureSubscription.cancel());
     }
     _temperatureStreamController.close();
+    _peakTimestampsController.close();
   }
 
   Stream<_MotionAwareSample> get _sampleStream {
@@ -233,40 +240,6 @@ class PpgFilter {
     }
     _vitalsStream = _createVitalsStream().asBroadcastStream();
     return _vitalsStream!;
-  }
-
-  Stream<(int, double)> _createLiveDisplaySignalStream() {
-    final safeSampleFreq =
-        sampleFreq.isFinite && sampleFreq > 0 ? sampleFreq : 50.0;
-    final bandPassFilter = BandPassFilter(
-      sampleFreq: safeSampleFreq,
-      lowCut: 0.5,
-      highCut: 3.2,
-    );
-    int? selectedChannel;
-    var lastFiniteSample = 0.0;
-
-    return inputStream.map((sample) {
-      if (selectedChannel == null) {
-        selectedChannel = _pickStableDisplayChannel(sample);
-        const names = ['Green', 'Red', 'IR'];
-        debugPrint(
-          '📡 PPG DisplayChannel: ${names[selectedChannel!]}',
-        );
-      }
-      var selectedOpticalSignal = _readDisplayChannel(
-        sample,
-        selectedChannel!,
-      );
-      selectedOpticalSignal *= -1;
-      if (!selectedOpticalSignal.isFinite) {
-        selectedOpticalSignal = lastFiniteSample;
-      } else {
-        lastFiniteSample = selectedOpticalSignal;
-      }
-      final bandPassed = bandPassFilter.filter(selectedOpticalSignal);
-      return (sample.timestamp, bandPassed);
-    });
   }
 
   int _pickStableDisplayChannel(PpgOpticalSample sample) {
@@ -302,6 +275,11 @@ class PpgFilter {
   Stream<_MotionAwareSample> _createProcessedStream() {
     final safeSampleFreq =
         sampleFreq.isFinite && sampleFreq > 0 ? sampleFreq : 50.0;
+    final displayBandPassFilter = BandPassFilter(
+      sampleFreq: safeSampleFreq,
+      lowCut: 0.5,
+      highCut: 3.2,
+    );
     final ambientCanceler = _AmbientLightCanceler();
     final motionSuppressor = _MotionNoiseSuppressor();
     final imuCanceler = _MultiReferenceMotionCanceler();
@@ -316,16 +294,14 @@ class PpgFilter {
       highCut: 5.5,
     );
     final normalizer = _BoundedSignalNormalizer();
-    final displayDetrender = _DisplayBaselineDetrender(
-      sampleFreqHz: safeSampleFreq,
-      timeConstantSeconds: 3.2,
-    );
     // Vergleichspfad: ohne Motion-Kompensation
     final normalizerClean = _BoundedSignalNormalizer();
     final displayDetrenderClean = _DisplayBaselineDetrender(
       sampleFreqHz: safeSampleFreq,
       timeConstantSeconds: 3.2,
     );
+    int? selectedDisplayChannel;
+    var lastFiniteDisplaySample = 0.0;
 
     if (motionStream != null) {
       _motionSubscription = motionStream!.listen((event) {
@@ -343,6 +319,23 @@ class PpgFilter {
     }
 
     return inputStream.map((sample) {
+      if (selectedDisplayChannel == null) {
+        selectedDisplayChannel = _pickStableDisplayChannel(sample);
+        const names = ['Green', 'Red', 'IR'];
+        debugPrint('📡 PPG DisplayChannel: ${names[selectedDisplayChannel!]}');
+      }
+      var legacyDisplaySignal = _readDisplayChannel(
+        sample,
+        selectedDisplayChannel!,
+      );
+      legacyDisplaySignal *= -1;
+      if (!legacyDisplaySignal.isFinite) {
+        legacyDisplaySignal = lastFiniteDisplaySample;
+      } else {
+        lastFiniteDisplaySample = legacyDisplaySignal;
+      }
+      legacyDisplaySignal = displayBandPassFilter.filter(legacyDisplaySignal);
+
       final selectedOpticalSignal = opticalChannelSelector.select(sample);
       final ambientCanceled = ambientCanceler.filter(
         green: selectedOpticalSignal,
@@ -359,7 +352,6 @@ class PpgFilter {
         bandPassed,
         motionLevel: motionSuppressor.motionLevel,
       );
-      final displaySignal = displayDetrender.filter(bounded);
 
       // Vergleichspfad: direkt nach BandPass, ohne Suppressor
       final cleanSignal = displayDetrenderClean.filter(
@@ -373,7 +365,7 @@ class PpgFilter {
         rawRed: sample.red,
         rawIr: sample.ir,
         signal: bounded,
-        displaySignal: displaySignal,
+        displaySignal: legacyDisplaySignal,
         motionLevel: motionSuppressor.motionLevel,
         motionCompensatedSignal: cleanSignal,
       );
@@ -406,20 +398,8 @@ class PpgFilter {
     required double ticksPerSecond,
     required double estimatedSampleFreqHz,
   }) {
-    if (samples.length < 8) {
-      return (heartRateBpm: null, peakTimestamps: const []);
-    }
-
-    // Simple extraction: local maxima on the filtered waveform with a fixed
-    // refractory distance and dynamic amplitude threshold.
-    final signal =
-        samples.map((sample) => sample.signal).toList(growable: false);
-    final mean = signal.reduce((a, b) => a + b) / signal.length;
-    final centered =
-        signal.map((value) => value - mean).toList(growable: false);
-
-    final signalStd = _standardDeviation(centered);
-    if (!signalStd.isFinite || signalStd < 1e-4) {
+    final n = samples.length;
+    if (n < 8) {
       return (heartRateBpm: null, peakTimestamps: const []);
     }
 
@@ -427,26 +407,54 @@ class PpgFilter {
         estimatedSampleFreqHz.isFinite && estimatedSampleFreqHz > 0
             ? estimatedSampleFreqHz
             : (sampleFreq.isFinite && sampleFreq > 0 ? sampleFreq : 50.0);
+    final maxPeakSamples = min(n, (safeSampleFreq * 8).round());
+    final peakStart = n - maxPeakSamples;
+    final peakSignals = samples
+        .sublist(peakStart)
+        .map((sample) => sample.displaySignal)
+        .toList(growable: false);
+    final peakTs = samples
+        .sublist(peakStart)
+        .map((sample) => sample.timestamp)
+        .toList(growable: false);
+    final peakN = peakSignals.length;
+
+    final scaleMax = min(
+      peakN ~/ 2,
+      max(1, (safeSampleFreq * _maxBeatIntervalSec / 2).round()),
+    );
+    final scaleThreshold =
+        max(1, (safeSampleFreq * _minBeatIntervalSec / 2).round());
     final minPeakDistanceSamples =
         max(1, (safeSampleFreq * _minBeatIntervalSec * 0.85).round());
-    final amplitudeThreshold = max(0.04, signalStd * 0.35);
 
+    final gamma = List<int>.filled(peakN, 0);
+    for (var i = 1; i < peakN - 1; i++) {
+      final maxScale = min(scaleMax, min(i, peakN - 1 - i));
+      for (var scale = 1; scale <= maxScale; scale++) {
+        if (peakSignals[i] > peakSignals[i - scale] &&
+            peakSignals[i] > peakSignals[i + scale]) {
+          gamma[i] += 1;
+        } else {
+          break;
+        }
+      }
+    }
+
+    final maxGamma = gamma.reduce(max);
+    final adaptiveThreshold = max(scaleThreshold, (maxGamma * 0.4).round());
     final peakIndices = <int>[];
-    for (var i = 1; i < centered.length - 1; i++) {
-      final current = centered[i];
-      if (!current.isFinite || current < amplitudeThreshold) {
+    for (var i = 1; i < peakN - 1; i++) {
+      if (gamma[i] < adaptiveThreshold) {
         continue;
       }
-      final isLocalMaximum =
-          current >= centered[i - 1] && current > centered[i + 1];
-      if (!isLocalMaximum) {
+      if (gamma[i] < gamma[i - 1] || gamma[i] < gamma[i + 1]) {
         continue;
       }
 
       if (peakIndices.isNotEmpty &&
           (i - peakIndices.last) < minPeakDistanceSamples) {
-        // Within refractory period keep only the stronger peak.
-        if (current > centered[peakIndices.last]) {
+        if (gamma[i] > gamma[peakIndices.last]) {
           peakIndices[peakIndices.length - 1] = i;
         }
         continue;
@@ -454,9 +462,8 @@ class PpgFilter {
       peakIndices.add(i);
     }
 
-    final peaks = peakIndices
-        .map((index) => samples[index].timestamp)
-        .toList(growable: false);
+    final peaks =
+        peakIndices.map((index) => peakTs[index]).toList(growable: false);
 
     return _estimateHeartRateFromPeakTimestamps(
       peaks,
@@ -748,6 +755,7 @@ class PpgFilter {
       );
       final peaks = peakEstimate.peakTimestamps;
       final peakHeartRate = peakEstimate.heartRateBpm;
+      _peakTimestampsController.add(peaks);
 
       final peakScore = (peaks.length / 8.0).clamp(0.0, 1.0);
       qualityScore =

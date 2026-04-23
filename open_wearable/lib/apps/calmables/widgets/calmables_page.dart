@@ -44,6 +44,7 @@ enum ControlMode { manual, autopilot }
 class _CalmablesPageState extends State<CalmablesPage> {
   PpgFilter? _ppgFilter;
   Stream<(int, double)>? _displayPpgSignalStream;
+  Stream<List<int>>? _peakTimestampsStream;
   Stream<(int, double)>? _rawHrChartStream;
   Stream<(int, double)>? _smoothedHrChartStream;
 
@@ -302,6 +303,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
     }
     setState(() {
       _displayPpgSignalStream = ppgFilter.displaySignalStream;
+      _peakTimestampsStream = ppgFilter.peakTimestampsStream;
       _rawHrChartStream = ppgFilter.rawHeartRateChartStream;
       _smoothedHrChartStream = ppgFilter.smoothedHeartRateChartStream;
       _heartRateStream = ppgFilter.heartRateStream;
@@ -885,6 +887,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
           subtitle: 'Suppressor + NLMS aktiv',
           icon: Icons.show_chart_rounded,
           chartStream: displayPpgSignalStream,
+          peakTimestampsStream: _peakTimestampsStream,
           timestampExponent: widget.ppgSensor.timestampExponent,
           fixedMeasureMin: null,
           fixedMeasureMax: null,
@@ -1090,6 +1093,7 @@ class _SignalPanelCard extends StatelessWidget {
   final String subtitle;
   final IconData icon;
   final Stream<(int, double)> chartStream;
+  final Stream<List<int>>? peakTimestampsStream;
   final int timestampExponent;
   final double? fixedMeasureMin;
   final double? fixedMeasureMax;
@@ -1099,6 +1103,7 @@ class _SignalPanelCard extends StatelessWidget {
     required this.subtitle,
     required this.icon,
     required this.chartStream,
+    this.peakTimestampsStream,
     required this.timestampExponent,
     this.fixedMeasureMin,
     this.fixedMeasureMax,
@@ -1140,6 +1145,7 @@ class _SignalPanelCard extends StatelessWidget {
               height: 88,
               child: RollingChart(
                 dataSteam: chartStream,
+                peakTimestampsStream: peakTimestampsStream,
                 timestampExponent: timestampExponent,
                 timeWindow: 5,
                 showXAxis: false,
