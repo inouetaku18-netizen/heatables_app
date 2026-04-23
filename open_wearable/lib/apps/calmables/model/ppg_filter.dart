@@ -278,7 +278,7 @@ class PpgFilter {
     final displayBandPassFilter = BandPassFilter(
       sampleFreq: safeSampleFreq,
       lowCut: 0.5,
-      highCut: 3.2,
+      highCut: 8.0,
     );
     final ambientCanceler = _AmbientLightCanceler();
     final motionSuppressor = _MotionNoiseSuppressor();
