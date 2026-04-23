@@ -1,195 +1,440 @@
 import 'dart:math';
 
-/// LF/HF比算出クラス
+class HrvFrequencyMetrics {
+  final double lfPower;
+  final double hfPower;
+  final double lfHfRatio;
+  final double? totalPower;
+  final int usedIbiCount;
+  final int resampledCount;
+
+  const HrvFrequencyMetrics({
+    required this.lfPower,
+    required this.hfPower,
+    required this.lfHfRatio,
+    required this.totalPower,
+    required this.usedIbiCount,
+    required this.resampledCount,
+  });
+
+  @override
+  String toString() {
+    return 'HrvFrequencyMetrics('
+        'lf=$lfPower, hf=$hfPower, lf/hf=$lfHfRatio, '
+        'total=$totalPower, ibiCount=$usedIbiCount, resampled=$resampledCount'
+        ')';
+  }
+}
+
 class HrvLfhfCalculator {
+  HrvLfhfCalculator({
+    this.bufferDurationMs = 5 * 60 * 1000.0,
+    this.fsResample = 4.0,
+    this.minIbiMs = 300.0,
+    this.maxIbiMs = 2000.0,
+    this.enableArtifactFilter = true,
+  });
+
+  final double bufferDurationMs;
+  final double fsResample;
+  final double minIbiMs;
+  final double maxIbiMs;
+  final bool enableArtifactFilter;
+
   final List<double> _ibiListMs = [];
 
-  /// 1拍分の心拍間隔(msec)を追加
-  /// 1分(60000ms)を超える古いデータは削除
   void addIbi(double ibiMs) {
+    if (!ibiMs.isFinite) return;
     _ibiListMs.add(ibiMs);
-    _trimToOneMinute();
+    _trimToBuffer();
   }
 
-  void _trimToOneMinute() {
-    double totalMs = _ibiListMs.fold(0, (a, b) => a + b);
-    while (totalMs > 60000 && _ibiListMs.isNotEmpty) {
+  void clear() {
+    _ibiListMs.clear();
+  }
+
+  void _trimToBuffer() {
+    double totalMs = _ibiListMs.fold(0.0, (a, b) => a + b);
+    while (_ibiListMs.isNotEmpty && totalMs > bufferDurationMs) {
       totalMs -= _ibiListMs.removeAt(0);
     }
   }
 
-  /// LF/HF比を計算。データ不足時はnullを返す
-  double? computeLfhfRatio() {
-    if (_ibiListMs.length < 30) return null; // 30拍未満は不十分
+  HrvFrequencyMetrics? compute() {
+    if (_ibiListMs.length < 60) return null;
 
-    // 秒単位に変換
-    final ibiSec = _ibiListMs.map((e) => e / 1000.0).toList();
+    final cleanedIbiMs = _prepareIbis(_ibiListMs);
+    if (cleanedIbiMs.length < 40) return null;
 
-    // 3次スプライン補間し1000Hz等間隔化、4Hzにダウンサンプリング
-    final resampled = _resampleWithSpline(ibiSec, fsTarget: 4.0);
-    if (resampled.isEmpty) return null;
+    final ibiSec = cleanedIbiMs.map((e) => e / 1000.0).toList();
 
-    // 線形トレンド除去
-    final detrended = _removeLinearTrend(resampled);
+    final tachogram = _buildResampledTachogram(
+      ibiSec,
+      fsTarget: fsResample,
+    );
+    if (tachogram.length < 128) return null;
 
-    // ハミング窓適用
-    final windowed = _applyHammingWindow(detrended);
+    final detrended = _removeLinearTrend(tachogram);
 
-    // 256点FFT -> パワースペクトル密度算出
-    final psd = _computePowerSpectralDensity(windowed, fs: 4.0);
+    final psd = _welchPsd(
+      detrended,
+      fs: fsResample,
+      segmentLength: 256,
+      overlap: 0.5,
+    );
+    if (psd == null) return null;
 
-    // LF(0.04-0.15Hz)とHF(0.15-0.40Hz)のパワー積分
-    final lfPower = _bandPower(psd, fs: 4.0, fLow: 0.04, fHigh: 0.15);
-    final hfPower = _bandPower(psd, fs: 4.0, fLow: 0.15, fHigh: 0.40);
-    if (hfPower == 0) return null;
+    final lf = _bandPower(
+      psd.psd,
+      df: psd.df,
+      fLow: 0.04,
+      fHigh: 0.15,
+    );
+    final hf = _bandPower(
+      psd.psd,
+      df: psd.df,
+      fLow: 0.15,
+      fHigh: 0.40,
+    );
+    final total = _bandPower(
+      psd.psd,
+      df: psd.df,
+      fLow: 0.04,
+      fHigh: 0.40,
+    );
 
-    return lfPower / hfPower;
+    if (!lf.isFinite || !hf.isFinite || hf <= 0.0) return null;
+
+    return HrvFrequencyMetrics(
+      lfPower: lf,
+      hfPower: hf,
+      lfHfRatio: lf / hf,
+      totalPower: total.isFinite ? total : null,
+      usedIbiCount: cleanedIbiMs.length,
+      resampledCount: detrended.length,
+    );
   }
 
-  // functions below are private helpers for the LF/HF calculation
+  List<double> _prepareIbis(List<double> raw) {
+    final bounded = raw
+        .where((v) => v.isFinite && v >= minIbiMs && v <= maxIbiMs)
+        .toList(growable: false);
 
-  List<double> _resampleWithSpline(List<double> ibiSec,
-      {required double fsTarget}) {
-    if (ibiSec.length < 4) return [];
-
-    final timePoints = <double>[];
-    double cumSum = 0;
-    for (final v in ibiSec) {
-      cumSum += v;
-      timePoints.add(cumSum);
+    if (!enableArtifactFilter || bounded.length < 5) {
+      return bounded;
     }
 
-    // 1000Hzの高分解能時間軸
-    final fsHigh = 1000.0;
-    final dtHigh = 1.0 / fsHigh;
-    final highTimes = <double>[];
-    for (double t = timePoints.first; t <= timePoints.last; t += dtHigh) {
-      highTimes.add(t);
-    }
-
-    // 3次スプライン補間 → ここでは線形補間で代用
-    final splineValues = _linearInterpolate(timePoints, ibiSec, highTimes);
-
-    // 4Hzにダウンサンプリング
-    final dtTarget = 1.0 / fsTarget;
-    final targetTimes = <double>[];
-    for (double t = timePoints.first; t <= timePoints.last; t += dtTarget) {
-      targetTimes.add(t);
-    }
-    return _linearInterpolate(highTimes, splineValues, targetTimes);
-  }
-
-  List<double> _linearInterpolate(
-      List<double> x, List<double> y, List<double> xi) {
     final result = <double>[];
-    int j = 0;
-    for (final t in xi) {
-      while (j < x.length - 2 && t > x[j + 1]) j++;
-      final x0 = x[j];
-      final x1 = x[j + 1];
-      final y0 = y[j];
-      final y1 = y[j + 1];
-      final ratio = (t - x0) / (x1 - x0);
-      result.add(y0 + ratio * (y1 - y0));
+    for (var i = 0; i < bounded.length; i++) {
+      final v = bounded[i];
+
+      final start = max(0, i - 2);
+      final end = min(bounded.length - 1, i + 2);
+      final local = bounded.sublist(start, end + 1)..sort();
+      final med = _median(local);
+
+      if (med <= 0) continue;
+
+      final relErr = (v - med).abs() / med;
+
+      // Einfacher Artefaktfilter:
+      // behalte Intervalle, die nicht zu stark vom lokalen Median abweichen.
+      if (relErr <= 0.20) {
+        result.add(v);
+      }
     }
     return result;
+  }
+
+  List<double> _buildResampledTachogram(
+    List<double> ibiSec, {
+    required double fsTarget,
+  }) {
+    if (ibiSec.length < 4) return const [];
+
+    // Intervallmitten als Zeitachse.
+    final timePoints = <double>[];
+    double t = 0.0;
+    for (final ibi in ibiSec) {
+      final mid = t + ibi / 2.0;
+      timePoints.add(mid);
+      t += ibi;
+    }
+
+    if (timePoints.length != ibiSec.length) return const [];
+    if (t <= 0) return const [];
+
+    final dt = 1.0 / fsTarget;
+    final startT = timePoints.first;
+    final endT = timePoints.last;
+
+    if (endT <= startT) return const [];
+
+    final targetTimes = <double>[];
+    for (double tt = startT; tt <= endT; tt += dt) {
+      targetTimes.add(tt);
+    }
+    if (targetTimes.length < 4) return const [];
+
+    return _cubicSplineInterpolate(timePoints, ibiSec, targetTimes);
+  }
+
+  List<double> _cubicSplineInterpolate(
+    List<double> x,
+    List<double> y,
+    List<double> xi,
+  ) {
+    final n = x.length;
+    if (n == 0) return const [];
+    if (n == 1) return xi.map((_) => y.first).toList(growable: false);
+    if (n == 2) {
+      final dx = x[1] - x[0];
+      if (dx == 0) return xi.map((_) => y.first).toList(growable: false);
+      final m = (y[1] - y[0]) / dx;
+      return xi.map((t) => y[0] + m * (t - x[0])).toList(growable: false);
+    }
+
+    final h = List<double>.generate(n - 1, (i) => x[i + 1] - x[i]);
+    for (final v in h) {
+      if (v <= 0) return const [];
+    }
+
+    final alpha = List<double>.filled(n, 0.0);
+    for (var i = 1; i < n - 1; i++) {
+      alpha[i] = 3.0 * (y[i + 1] - y[i]) / h[i] -
+          3.0 * (y[i] - y[i - 1]) / h[i - 1];
+    }
+
+    final l = List<double>.filled(n, 0.0);
+    final mu = List<double>.filled(n, 0.0);
+    final z = List<double>.filled(n, 0.0);
+    final c = List<double>.filled(n, 0.0);
+    final b = List<double>.filled(n - 1, 0.0);
+    final d = List<double>.filled(n - 1, 0.0);
+
+    l[0] = 1.0;
+    mu[0] = 0.0;
+    z[0] = 0.0;
+
+    for (var i = 1; i < n - 1; i++) {
+      l[i] = 2.0 * (x[i + 1] - x[i - 1]) - h[i - 1] * mu[i - 1];
+      if (l[i] == 0.0) return const [];
+      mu[i] = h[i] / l[i];
+      z[i] = (alpha[i] - h[i - 1] * z[i - 1]) / l[i];
+    }
+
+    l[n - 1] = 1.0;
+    z[n - 1] = 0.0;
+    c[n - 1] = 0.0;
+
+    for (var j = n - 2; j >= 0; j--) {
+      c[j] = z[j] - mu[j] * c[j + 1];
+      b[j] = (y[j + 1] - y[j]) / h[j] - h[j] * (c[j + 1] + 2.0 * c[j]) / 3.0;
+      d[j] = (c[j + 1] - c[j]) / (3.0 * h[j]);
+    }
+
+    final out = <double>[];
+    var seg = 0;
+    for (final t in xi) {
+      while (seg < n - 2 && t > x[seg + 1]) {
+        seg++;
+      }
+      final dx = t - x[seg];
+      out.add(y[seg] + b[seg] * dx + c[seg] * dx * dx + d[seg] * dx * dx * dx);
+    }
+    return out;
   }
 
   List<double> _removeLinearTrend(List<double> data) {
     final n = data.length;
     if (n < 2) return data;
-    final x = List<double>.generate(n, (i) => i.toDouble());
+
     final meanX = (n - 1) / 2.0;
     final meanY = data.reduce((a, b) => a + b) / n;
-    double num = 0, den = 0;
-    for (int i = 0; i < n; i++) {
-      num += (x[i] - meanX) * (data[i] - meanY);
-      den += (x[i] - meanX) * (x[i] - meanX);
+
+    double num = 0.0;
+    double den = 0.0;
+    for (var i = 0; i < n; i++) {
+      final dx = i - meanX;
+      num += dx * (data[i] - meanY);
+      den += dx * dx;
     }
+
+    if (den == 0.0) return data;
     final slope = num / den;
     final intercept = meanY - slope * meanX;
-    return List<double>.generate(n, (i) => data[i] - (slope * i + intercept));
+
+    return List<double>.generate(
+      n,
+      (i) => data[i] - (slope * i + intercept),
+      growable: false,
+    );
   }
 
-  List<double> _applyHammingWindow(List<double> data) {
-    final n = data.length;
-    return List<double>.generate(n, (i) {
-      final w = 0.54 - 0.46 * cos(2 * pi * i / (n - 1));
-      return data[i] * w;
-    });
-  }
+  _WelchResult? _welchPsd(
+    List<double> data, {
+    required double fs,
+    required int segmentLength,
+    required double overlap,
+  }) {
+    if (data.length < 32) return null;
 
-  List<double> _computePowerSpectralDensity(List<double> data,
-      {required double fs}) {
-    final n = 256;
-    final signal = List<double>.filled(n, 0);
-    for (int i = 0; i < n && i < data.length; i++) {
-      signal[i] = data[i];
+    int nperseg = segmentLength;
+    if (data.length < nperseg) {
+      nperseg = _largestPowerOfTwoAtMost(data.length);
     }
-    final fftResult = _fft(signal);
-    final psd = List<double>.filled(n ~/ 2 + 1, 0);
-    for (int k = 0; k <= n ~/ 2; k++) {
-      final re = fftResult[2 * k];
-      //final im = fftResult[2 * k + 1];
-      psd[k] = (re * re) / (fs * n);
+    if (nperseg < 32) return null;
+
+    final step = max(1, (nperseg * (1.0 - overlap)).round());
+    if (step <= 0) return null;
+
+    final window = _hammingWindow(nperseg);
+    final windowPower = window.fold(0.0, (a, b) => a + b * b);
+    if (windowPower <= 0.0) return null;
+
+    final halfBins = nperseg ~/ 2 + 1;
+    final avgPsd = List<double>.filled(halfBins, 0.0);
+
+    var segments = 0;
+    for (int start = 0; start + nperseg <= data.length; start += step) {
+      final seg = data.sublist(start, start + nperseg);
+      final mean = seg.reduce((a, b) => a + b) / seg.length;
+
+      final x = List<double>.filled(nperseg, 0.0);
+      for (var i = 0; i < nperseg; i++) {
+        x[i] = (seg[i] - mean) * window[i];
+      }
+
+      final fft = _fftReal(x);
+
+      for (var k = 0; k < halfBins; k++) {
+        final re = fft[2 * k];
+        final im = fft[2 * k + 1];
+        double p = (re * re + im * im) / (fs * windowPower);
+
+        // One-sided PSD correction except DC and Nyquist.
+        if (k != 0 && !(nperseg.isEven && k == nperseg ~/ 2)) {
+          p *= 2.0;
+        }
+
+        avgPsd[k] += p;
+      }
+      segments++;
     }
-    return psd;
+
+    if (segments == 0) return null;
+
+    for (var i = 0; i < avgPsd.length; i++) {
+      avgPsd[i] /= segments;
+    }
+
+    final df = fs / nperseg;
+    return _WelchResult(psd: avgPsd, df: df);
   }
 
-  List<double> _fft(List<double> input) {
+  List<double> _hammingWindow(int n) {
+    if (n <= 1) return List<double>.filled(n, 1.0);
+    return List<double>.generate(
+      n,
+      (i) => 0.54 - 0.46 * cos(2 * pi * i / (n - 1)),
+      growable: false,
+    );
+  }
+
+  double _bandPower(
+    List<double> psd, {
+    required double df,
+    required double fLow,
+    required double fHigh,
+  }) {
+    if (psd.isEmpty || df <= 0.0 || fHigh <= fLow) return 0.0;
+
+    final startIndex = max(0, (fLow / df).ceil());
+    final endIndex = min(psd.length - 1, (fHigh / df).floor());
+    if (startIndex > endIndex) return 0.0;
+
+    double power = 0.0;
+    for (var i = startIndex; i <= endIndex; i++) {
+      power += psd[i] * df;
+    }
+    return power;
+  }
+
+  double _median(List<double> values) {
+    if (values.isEmpty) return 0.0;
+    final sorted = [...values]..sort();
+    final mid = sorted.length ~/ 2;
+    return sorted.length.isOdd
+        ? sorted[mid]
+        : (sorted[mid - 1] + sorted[mid]) / 2.0;
+  }
+
+  int _largestPowerOfTwoAtMost(int n) {
+    var p = 1;
+    while ((p << 1) <= n) {
+      p <<= 1;
+    }
+    return p;
+  }
+
+  List<double> _fftReal(List<double> input) {
     final n = input.length;
     if (n == 0 || (n & (n - 1)) != 0) {
-      throw Exception('FFT length must be power of two');
+      throw ArgumentError('FFT length must be a power of two');
     }
-    List<double> buffer = List.filled(n * 2, 0);
-    for (int i = 0; i < n; i++) {
+
+    final buffer = List<double>.filled(n * 2, 0.0);
+    for (var i = 0; i < n; i++) {
       buffer[2 * i] = input[i];
-      buffer[2 * i + 1] = 0;
+      buffer[2 * i + 1] = 0.0;
     }
+
     _fftRecursive(buffer, n);
     return buffer;
   }
 
   void _fftRecursive(List<double> buffer, int n) {
     if (n <= 1) return;
+
     final half = n ~/ 2;
-    final even = List<double>.filled(half * 2, 0);
-    final odd = List<double>.filled(half * 2, 0);
-    for (int i = 0; i < half; i++) {
+    final even = List<double>.filled(half * 2, 0.0);
+    final odd = List<double>.filled(half * 2, 0.0);
+
+    for (var i = 0; i < half; i++) {
       even[2 * i] = buffer[4 * i];
       even[2 * i + 1] = buffer[4 * i + 1];
       odd[2 * i] = buffer[4 * i + 2];
       odd[2 * i + 1] = buffer[4 * i + 3];
     }
+
     _fftRecursive(even, half);
     _fftRecursive(odd, half);
-    for (int k = 0; k < half; k++) {
+
+    for (var k = 0; k < half; k++) {
       final angle = -2 * pi * k / n;
-      final cosVal = cos(angle);
-      final sinVal = sin(angle);
+      final c = cos(angle);
+      final s = sin(angle);
+
       final oddRe = odd[2 * k];
       final oddIm = odd[2 * k + 1];
-      final tRe = cosVal * oddRe - sinVal * oddIm;
-      final tIm = cosVal * oddIm + sinVal * oddRe;
+
+      final tRe = c * oddRe - s * oddIm;
+      final tIm = c * oddIm + s * oddRe;
+
       buffer[2 * k] = even[2 * k] + tRe;
       buffer[2 * k + 1] = even[2 * k + 1] + tIm;
       buffer[2 * (k + half)] = even[2 * k] - tRe;
       buffer[2 * (k + half) + 1] = even[2 * k + 1] - tIm;
     }
   }
+}
 
-  double _bandPower(List<double> psd,
-      {required double fs, required double fLow, required double fHigh}) {
-    final n = (psd.length - 1) * 2;
-    final df = fs / n;
-    final startIndex = (fLow / df).ceil();
-    final endIndex = (fHigh / df).floor();
-    if (startIndex >= psd.length || endIndex < 0 || startIndex > endIndex)
-      return 0;
-    double power = 0;
-    for (int i = startIndex; i <= endIndex && i < psd.length; i++) {
-      power += psd[i];
-    }
-    return power;
-  }
+class _WelchResult {
+  final List<double> psd;
+  final double df;
+
+  const _WelchResult({
+    required this.psd,
+    required this.df,
+  });
 }
