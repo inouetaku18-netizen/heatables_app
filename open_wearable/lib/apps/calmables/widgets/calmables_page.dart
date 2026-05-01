@@ -570,6 +570,10 @@ class _CalmablesPageState extends State<CalmablesPage> {
             imuStream: _rawImuStream,
             heartRateStream: _heartRateStream,
             lfhfStream: _hrvLfhfStream,
+            displayPpgStream: _displayPpgSignalStream,
+            rawHrStream: _rawHrChartStream,
+            smoothedHrStream: _smoothedHrChartStream,
+            timestampExponent: widget.ppgSensor.timestampExponent,
           ),
         ),
       );

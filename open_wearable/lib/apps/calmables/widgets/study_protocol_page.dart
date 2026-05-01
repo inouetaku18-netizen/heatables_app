@@ -4,6 +4,8 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:open_wearable/apps/calmables/model/ppg_filter.dart';
 import 'package:open_wearable/apps/calmables/model/sensor_data_logger.dart';
+import 'package:open_wearable/apps/calmables/widgets/rowling_chart.dart';
+import 'package:open_wearable/apps/calmables/widgets/rolling_hr_chart.dart';
 
 enum _Phase {
   participantIdInput,
@@ -31,6 +33,12 @@ class StudyProtocolPage extends StatefulWidget {
   final Stream<double?>? heartRateStream;
   final Stream<double?>? lfhfStream;
 
+  // Optional display streams for the HR chart panel.
+  final Stream<(int, double)>? displayPpgStream;
+  final Stream<(int, double)>? rawHrStream;
+  final Stream<(int, double)>? smoothedHrStream;
+  final int timestampExponent;
+
   const StudyProtocolPage({
     super.key,
     required this.dataLogger,
@@ -38,6 +46,10 @@ class StudyProtocolPage extends StatefulWidget {
     this.imuStream,
     this.heartRateStream,
     this.lfhfStream,
+    this.displayPpgStream,
+    this.rawHrStream,
+    this.smoothedHrStream,
+    this.timestampExponent = -3,
   });
 
   @override
@@ -54,6 +66,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
 
   // MA state
   _MaSubState _maSubState = _MaSubState.awaitingConfirm;
+  int _maStartNumber = 0;   // fixed x for the current MA block
   int _maCurrentNumber = 0;
   int _maExpectedAnswer = 0;
   Timer? _maJudgementTimer;
@@ -61,6 +74,9 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
   int _maCorrectCount = 0;
   int _maWrongCount = 0;
   final _random = Random();
+
+  // UI toggles
+  bool _showCharts = false;
 
   static const _kGreen = Color(0xFF009682);
 
@@ -112,7 +128,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
         _maJudgementCountdown--;
         if (_maJudgementCountdown <= 0) {
           t.cancel();
-          _onMaCorrect(); // auto-correct on timeout
+          _onMaTimeout();
         }
       });
     });
@@ -170,8 +186,10 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
     _log('ma_${number}_start');
     _maCorrectCount = 0;
     _maWrongCount = 0;
-    _maCurrentNumber = _randomMaStart();
+    _maStartNumber = _randomMaStart();
+    _maCurrentNumber = _maStartNumber;
     _maSubState = _MaSubState.awaitingConfirm;
+    _log('ma_${number}_start_x_$_maStartNumber');
     final phase = switch (number) {
       1 => _Phase.ma1Running,
       2 => _Phase.ma2Running,
@@ -202,21 +220,30 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
   void _onMaCorrect() {
     _maJudgementTimer?.cancel();
     _maCorrectCount++;
+    _maCurrentNumber = _maExpectedAnswer;
     _log('ma_correct_${_maExpectedAnswer}');
-    setState(() {
-      _maCurrentNumber = _maExpectedAnswer;
-      _maSubState = _MaSubState.awaitingConfirm;
-    });
+    _maExpectedAnswer = _maCurrentNumber - 17;
+    setState(() => _maSubState = _MaSubState.awaitingJudgement);
+    _startJudgementCountdown();
   }
 
   void _onMaWrong() {
     _maJudgementTimer?.cancel();
     _maWrongCount++;
-    _log('ma_wrong_restart_from_${_maExpectedAnswer}');
-    setState(() {
-      _maCurrentNumber = _randomMaStart();
-      _maSubState = _MaSubState.awaitingConfirm;
-    });
+    _maCurrentNumber = _maStartNumber;
+    _log('ma_wrong_restart_from_x_$_maStartNumber');
+    _maExpectedAnswer = _maCurrentNumber - 17;
+    setState(() => _maSubState = _MaSubState.awaitingJudgement);
+    _startJudgementCountdown();
+  }
+
+  void _onMaTimeout() {
+    _maWrongCount++;
+    _maCurrentNumber = _maStartNumber;
+    _log('ma_timeout_restart_from_x_$_maStartNumber');
+    _maExpectedAnswer = _maCurrentNumber - 17;
+    setState(() => _maSubState = _MaSubState.awaitingJudgement);
+    _startJudgementCountdown();
   }
 
   void _startRelaxation() {
@@ -237,6 +264,56 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
       _phaseRemainingSeconds = 0;
     });
   }
+
+  void _skipPhase() {
+    _phaseTimer?.cancel();
+    _maJudgementTimer?.cancel();
+    _log('skip_${_phase.name}');
+    switch (_phase) {
+      case _Phase.baselineRunning:
+        _log('baseline_end');
+        setState(() => _phase = _Phase.questionnaire);
+      case _Phase.questionnaire:
+        setState(() => _phase = _Phase.mastPrepare);
+      case _Phase.mastPrepare:
+        _startMast();
+      case _Phase.hit1Running:
+        _log('hit_1_end');
+        _startMa1();
+      case _Phase.ma1Running:
+        _log('ma_1_end');
+        _beginHit(2, 60, _startMa2);
+      case _Phase.hit2Running:
+        _log('hit_2_end');
+        _startMa2();
+      case _Phase.ma2Running:
+        _log('ma_2_end');
+        _beginHit(3, 60, _startMa3);
+      case _Phase.hit3Running:
+        _log('hit_3_end');
+        _startMa3();
+      case _Phase.ma3Running:
+        _log('ma_3_end');
+        _log('mast_end');
+        setState(() => _phase = _Phase.relaxationReady);
+      case _Phase.relaxationReady:
+        _startRelaxation();
+      case _Phase.relaxationRunning:
+        _log('relaxation_end');
+        setState(() => _phase = _Phase.done);
+      default:
+        break;
+    }
+  }
+
+  bool get _phaseIsSkippable =>
+      _phase != _Phase.participantIdInput &&
+      _phase != _Phase.baselineReady &&
+      _phase != _Phase.done;
+
+  bool get _chartsAvailable =>
+      widget.displayPpgStream != null ||
+      (widget.rawHrStream != null && widget.smoothedHrStream != null);
 
   Future<void> _stopAndShare() async {
     _phaseTimer?.cancel();
@@ -314,6 +391,17 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
             onPressed: _onBackPressed,
           ),
           actions: [
+            if (_chartsAvailable)
+              IconButton(
+                icon: Icon(
+                  _showCharts
+                      ? Icons.monitor_heart
+                      : Icons.monitor_heart_outlined,
+                  color: Colors.white,
+                ),
+                tooltip: 'Herzrate anzeigen',
+                onPressed: () => setState(() => _showCharts = !_showCharts),
+              ),
             if (showRestartOption)
               TextButton.icon(
                 onPressed: _confirmRestartProtocol,
@@ -326,11 +414,88 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
           ],
         ),
         body: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: _buildBody(),
+          child: Column(
+            children: [
+              if (_showCharts && _chartsAvailable) _buildChartsPanel(),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    children: [
+                      _buildBody(),
+                      if (_phaseIsSkippable) ...[                        const SizedBox(height: 24),
+                        TextButton.icon(
+                          onPressed: _skipPhase,
+                          icon: const Icon(
+                            Icons.skip_next_rounded,
+                            color: Colors.grey,
+                          ),
+                          label: const Text(
+                            'Schritt überspringen',
+                            style: TextStyle(color: Colors.grey),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildChartsPanel() {
+    return Container(
+      color: Colors.black,
+      child: Column(
+        children: [
+          if (widget.displayPpgStream != null) ...[
+            const Padding(
+              padding: EdgeInsets.only(top: 4, left: 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'PPG',
+                  style: TextStyle(color: Colors.white60, fontSize: 10),
+                ),
+              ),
+            ),
+            SizedBox(
+              height: 80,
+              child: RollingChart(
+                dataSteam: widget.displayPpgStream!,
+                timestampExponent: widget.timestampExponent,
+                timeWindow: 10,
+                showXAxis: false,
+              ),
+            ),
+          ],
+          if (widget.rawHrStream != null && widget.smoothedHrStream != null) ...[
+            const Padding(
+              padding: EdgeInsets.only(top: 2, left: 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'HR (bpm)',
+                  style: TextStyle(color: Colors.white60, fontSize: 10),
+                ),
+              ),
+            ),
+            SizedBox(
+              height: 80,
+              child: RollingHrChart(
+                rawHrStream: widget.rawHrStream!,
+                smoothedHrStream: widget.smoothedHrStream!,
+                timestampExponent: widget.timestampExponent,
+                timeWindow: 60,
+              ),
+            ),
+          ],
+          const SizedBox(height: 4),
+        ],
       ),
     );
   }
@@ -514,7 +679,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
         ),
         const SizedBox(height: 4),
         Text(
-          'Gesamt: ${totalSeconds}s',
+          'Startzahl: $_maStartNumber  ·  Gesamt: ${totalSeconds}s',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 12),
@@ -540,7 +705,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
           ),
           const SizedBox(height: 8),
           const Text(
-            '− 17',
+            '− 17 = ?',
             style: TextStyle(fontSize: 22, color: Colors.grey),
           ),
           const SizedBox(height: 24),
@@ -556,6 +721,14 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
             ),
           ),
         ] else ...[
+          Text(
+            '$_maCurrentNumber − 17 = ?',
+            style: Theme.of(context)
+                .textTheme
+                .bodyMedium
+                ?.copyWith(color: Colors.grey),
+          ),
+          const SizedBox(height: 4),
           const Text(
             'Erwartete Antwort',
             style: TextStyle(color: Colors.grey, fontSize: 14),
@@ -569,10 +742,30 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
             ),
           ),
           const SizedBox(height: 8),
-          Text(
-            '$_maJudgementCountdown',
-            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-              fontWeight: FontWeight.bold,
+          SizedBox(
+            width: 56,
+            height: 56,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                CircularProgressIndicator(
+                  value: _maJudgementCountdown / 5,
+                  strokeWidth: 5,
+                  backgroundColor: Colors.grey.shade200,
+                  valueColor: AlwaysStoppedAnimation(
+                    _maJudgementCountdown <= 2
+                        ? Colors.red
+                        : Colors.orange.shade600,
+                  ),
+                ),
+                Text(
+                  '$_maJudgementCountdown',
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleLarge
+                      ?.copyWith(fontWeight: FontWeight.bold),
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 20),
