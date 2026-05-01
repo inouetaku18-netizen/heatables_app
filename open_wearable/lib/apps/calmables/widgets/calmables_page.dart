@@ -574,6 +574,8 @@ class _CalmablesPageState extends State<CalmablesPage> {
             rawHrStream: _rawHrChartStream,
             smoothedHrStream: _smoothedHrChartStream,
             timestampExponent: widget.ppgSensor.timestampExponent,
+            signalQualityStream: _signalQualityStream,
+            onSendToCalmables: sendDataToCalmables,
           ),
         ),
       );

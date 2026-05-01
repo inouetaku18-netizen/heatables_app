@@ -9,6 +9,7 @@ import 'package:open_wearable/apps/calmables/widgets/rolling_hr_chart.dart';
 
 enum _Phase {
   participantIdInput,
+  calmablesPowerAdjust,
   baselineReady,
   baselineRunning,
   questionnaire,
@@ -36,7 +37,11 @@ class StudyProtocolPage extends StatefulWidget {
   final Stream<(int, double)>? displayPpgStream;
   final Stream<(int, double)>? rawHrStream;
   final Stream<(int, double)>? smoothedHrStream;
+  final Stream<PpgSignalQuality>? signalQualityStream;
   final int timestampExponent;
+
+  // Calmables control
+  final Future<void> Function(List<int>)? onSendToCalmables;
 
   const StudyProtocolPage({
     super.key,
@@ -48,14 +53,16 @@ class StudyProtocolPage extends StatefulWidget {
     this.displayPpgStream,
     this.rawHrStream,
     this.smoothedHrStream,
+    this.signalQualityStream,
     this.timestampExponent = -3,
+    this.onSendToCalmables,
   });
 
   @override
   State<StudyProtocolPage> createState() => _StudyProtocolPageState();
 }
 
-class _StudyProtocolPageState extends State<StudyProtocolPage> {
+class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProviderStateMixin {
   _Phase _phase = _Phase.participantIdInput;
   final _participantIdController = TextEditingController();
 
@@ -68,20 +75,29 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
   int _maCurrentNumber = 0;
   int _maExpectedAnswer = 0;
   Timer? _maJudgementTimer;
-  int _maJudgementCountdown = 0;
+  AnimationController? _judgementAnim;  // drives smooth ring 1.0→0.0 over 5s
   int _maCorrectCount = 0;
   int _maWrongCount = 0;
   final _random = Random();
 
+  // Transition state
+  bool _transitionIsMa = false;
+
   // UI toggles
   bool _showCharts = false;
 
-  // Transition screen state
+  // Calmables state
+  int _calmablesPowerValue = 0;  // saved from power-adjust step
+  int _relaxationCurrentPwm = 0;  // live value during relaxation
+  bool _calmablesOn = false;
+
+  // Transition screen state (non-MA fields)
   String _transitionTitle = '';
   String _transitionButtonLabel = '';
   IconData _transitionIcon = Icons.play_arrow_rounded;
   VoidCallback? _transitionCallback;
   VoidCallback? _transitionBackCallback;
+  VoidCallback? _transitionSkipCallback; // for MA transitions: jumps past the MA
 
   static const _kGreen = Color(0xFF009682);
 
@@ -89,6 +105,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
   void dispose() {
     _phaseTimer?.cancel();
     _maJudgementTimer?.cancel();
+    _judgementAnim?.dispose();
     _participantIdController.dispose();
     super.dispose();
   }
@@ -123,20 +140,17 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
 
   void _startJudgementCountdown() {
     _maJudgementTimer?.cancel();
-    setState(() => _maJudgementCountdown = 5);
-    _maJudgementTimer = Timer.periodic(const Duration(seconds: 1), (t) {
-      if (!mounted) {
-        t.cancel();
-        return;
-      }
-      setState(() {
-        _maJudgementCountdown--;
-        if (_maJudgementCountdown <= 0) {
-          t.cancel();
+    _judgementAnim?.dispose();
+    _judgementAnim = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 5),
+      value: 1.0,
+    )..addStatusListener((status) {
+        if (status == AnimationStatus.dismissed && mounted) {
           _onMaTimeout();
         }
-      });
-    });
+      })
+      ..reverse();
   }
 
   // ── Phase transitions ─────────────────────────────────────────────────────────
@@ -150,7 +164,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
       participantId: participantId,
     );
     if (!mounted) return;
-    setState(() => _phase = _Phase.baselineReady);
+    setState(() => _phase = _Phase.calmablesPowerAdjust);
   }
 
   void _startBaseline() {
@@ -191,9 +205,9 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
     _log('ma_${number}_start');
     _maCorrectCount = 0;
     _maWrongCount = 0;
-    _maStartNumber = _randomMaStart();
+    // _maStartNumber is already set by _readyMa*
     _maCurrentNumber = _maStartNumber;
-    _maExpectedAnswer = _maCurrentNumber - 17;
+    _maExpectedAnswer = _maStartNumber; // first: VP says the start number
     _log('ma_${number}_start_x_$_maStartNumber');
     final phase = switch (number) {
       1 => _Phase.ma1Running,
@@ -206,12 +220,13 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
     _startJudgementCountdown();
     _startPhaseTimer(durationSeconds, () {
       _maJudgementTimer?.cancel();
+      _judgementAnim?.stop();
       _log('ma_${number}_end');
       onDone();
     });
   }
 
-  void _awaitTransition(String title, String buttonLabel, IconData icon, VoidCallback callback, {VoidCallback? backCallback}) {
+  void _awaitTransition(String title, String buttonLabel, IconData icon, VoidCallback callback, {VoidCallback? backCallback, VoidCallback? skipCallback}) {
     setState(() {
       _phase = _Phase.pendingTransition;
       _transitionTitle = title;
@@ -219,23 +234,45 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
       _transitionIcon = icon;
       _transitionCallback = callback;
       _transitionBackCallback = backCallback;
+      _transitionSkipCallback = skipCallback;
     });
   }
 
-  void _readyMa1() => _awaitTransition('Kopfrechnen 1', 'Kopfrechnen starten', Icons.calculate_rounded, _startMa1,
-      backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _beginHit(1, 90, _readyMa1); });
+  void _readyMa1() {
+    _maStartNumber = _randomMaStart();
+    _transitionIsMa = true;
+    _awaitTransition('Kopfrechnen 1', 'Kopfrechnen starten', Icons.calculate_rounded, _startMa1,
+        backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _judgementAnim?.stop(); _beginHit(1, 90, _readyMa1); },
+        skipCallback: _readyHit2);
+  }
   void _startMa1() => _beginMa(1, 45, _readyHit2);
-  void _readyHit2() => _awaitTransition('Hand Immersion 2', 'Hand Immersion starten', Icons.water_rounded, _doHit2,
-      backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _beginMa(1, 45, _readyHit2); });
+  void _readyHit2() {
+    _transitionIsMa = false;
+    _awaitTransition('Hand Immersion 2', 'Hand Immersion starten', Icons.water_rounded, _doHit2,
+        backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _judgementAnim?.stop(); _beginMa(1, 45, _readyHit2); });
+  }
   void _doHit2() => _beginHit(2, 60, _readyMa2);
-  void _readyMa2() => _awaitTransition('Kopfrechnen 2', 'Kopfrechnen starten', Icons.calculate_rounded, _startMa2,
-      backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _beginHit(2, 60, _readyMa2); });
+  void _readyMa2() {
+    _maStartNumber = _randomMaStart();
+    _transitionIsMa = true;
+    _awaitTransition('Kopfrechnen 2', 'Kopfrechnen starten', Icons.calculate_rounded, _startMa2,
+        backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _judgementAnim?.stop(); _beginHit(2, 60, _readyMa2); },
+        skipCallback: _readyHit3);
+  }
   void _startMa2() => _beginMa(2, 60, _readyHit3);
-  void _readyHit3() => _awaitTransition('Hand Immersion 3', 'Hand Immersion starten', Icons.water_rounded, _doHit3,
-      backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _beginMa(2, 60, _readyHit3); });
+  void _readyHit3() {
+    _transitionIsMa = false;
+    _awaitTransition('Hand Immersion 3', 'Hand Immersion starten', Icons.water_rounded, _doHit3,
+        backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _judgementAnim?.stop(); _beginMa(2, 60, _readyHit3); });
+  }
   void _doHit3() => _beginHit(3, 60, _readyMa3);
-  void _readyMa3() => _awaitTransition('Kopfrechnen 3', 'Kopfrechnen starten', Icons.calculate_rounded, _startMa3,
-      backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _beginHit(3, 60, _readyMa3); });
+  void _readyMa3() {
+    _maStartNumber = _randomMaStart();
+    _transitionIsMa = true;
+    _awaitTransition('Kopfrechnen 3', 'Kopfrechnen starten', Icons.calculate_rounded, _startMa3,
+        backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _judgementAnim?.stop(); _beginHit(3, 60, _readyMa3); },
+        skipCallback: () { _log('ma_3_skip'); _log('mast_end'); setState(() => _phase = _Phase.relaxationReady); });
+  }
   void _startMa3() => _beginMa(3, 90, () {
         _log('mast_end');
         if (mounted) setState(() => _phase = _Phase.relaxationReady);
@@ -243,6 +280,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
 
   void _onMaCorrect() {
     _maJudgementTimer?.cancel();
+    _judgementAnim?.stop();
     _maCorrectCount++;
     _maCurrentNumber = _maExpectedAnswer;
     _log('ma_correct_${_maExpectedAnswer}');
@@ -253,9 +291,10 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
 
   void _onMaWrong() {
     _maJudgementTimer?.cancel();
+    _judgementAnim?.stop();
     _maWrongCount++;
     _maCurrentNumber = _maStartNumber;
-    _maExpectedAnswer = _maCurrentNumber - 17;
+    _maExpectedAnswer = _maStartNumber; // restart: VP says start number again
     _log('ma_wrong_restart_from_x_$_maStartNumber');
     setState(() {});
     _startJudgementCountdown();
@@ -264,7 +303,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
   void _onMaTimeout() {
     _maWrongCount++;
     _maCurrentNumber = _maStartNumber;
-    _maExpectedAnswer = _maCurrentNumber - 17;
+    _maExpectedAnswer = _maStartNumber; // restart: VP says start number again
     _log('ma_timeout_restart_from_x_$_maStartNumber');
     setState(() {});
     _startJudgementCountdown();
@@ -294,22 +333,43 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
     _maJudgementTimer?.cancel();
     _log('skip_${_phase.name}');
     switch (_phase) {
-      // Baseline: skip entire baseline section → MAST preparation
+      case _Phase.calmablesPowerAdjust:
+        setState(() => _phase = _Phase.baselineReady);
+      case _Phase.baselineReady:
+        _startBaseline();
       case _Phase.baselineRunning:
         _log('baseline_end');
-        setState(() => _phase = _Phase.mastPrepare);
+        setState(() => _phase = _Phase.questionnaire);
       case _Phase.questionnaire:
         setState(() => _phase = _Phase.mastPrepare);
-      // MAST: skip entire remaining MAST → relaxation
+      // mastPrepare: skip entire MAST
       case _Phase.mastPrepare:
-      case _Phase.pendingTransition:
-      case _Phase.hit1Running:
-      case _Phase.ma1Running:
-      case _Phase.hit2Running:
-      case _Phase.ma2Running:
-      case _Phase.hit3Running:
-      case _Phase.ma3Running:
         _log('mast_end');
+        setState(() => _phase = _Phase.relaxationReady);
+      // Individual MAST phases: skip only that phase
+      case _Phase.pendingTransition:
+        // If it's an MA transition, skip the MA entirely and go to the next step after it
+        if (_transitionIsMa) {
+          // _transitionCallback is _startMaX, which calls _beginMa(X, ..., onDone)
+          // We need to jump straight to onDone. Use a fake _beginMa that just calls onDone.
+          // Determine which MA we're about to start by checking which _startMaX is stored.
+          // Simpler: store a dedicated _transitionSkipCallback set alongside _transitionCallback.
+          _transitionSkipCallback?.call();
+        } else {
+          _transitionCallback?.call();
+        }
+      case _Phase.hit1Running:
+        _log('hit_1_end'); _readyMa1();
+      case _Phase.ma1Running:
+        _maJudgementTimer?.cancel(); _log('ma_1_end'); _readyHit2();
+      case _Phase.hit2Running:
+        _log('hit_2_end'); _readyMa2();
+      case _Phase.ma2Running:
+        _maJudgementTimer?.cancel(); _log('ma_2_end'); _readyHit3();
+      case _Phase.hit3Running:
+        _log('hit_3_end'); _readyMa3();
+      case _Phase.ma3Running:
+        _maJudgementTimer?.cancel(); _log('ma_3_end'); _log('mast_end');
         setState(() => _phase = _Phase.relaxationReady);
       case _Phase.relaxationReady:
         _startRelaxation();
@@ -326,6 +386,10 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
     _maJudgementTimer?.cancel();
     _log('back_${_phase.name}');
     switch (_phase) {
+      case _Phase.calmablesPowerAdjust:
+        setState(() => _phase = _Phase.participantIdInput);
+      case _Phase.baselineReady:
+        setState(() => _phase = _Phase.calmablesPowerAdjust);
       case _Phase.baselineRunning:
         setState(() { _phase = _Phase.baselineReady; _phaseRemainingSeconds = 0; });
       case _Phase.questionnaire:
@@ -357,27 +421,27 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
 
   bool get _phaseIsSkippable =>
       _phase != _Phase.participantIdInput &&
-      _phase != _Phase.baselineReady &&
       _phase != _Phase.done;
 
   bool get _canGoBack =>
       _phase != _Phase.participantIdInput &&
-      _phase != _Phase.baselineReady &&
       _phase != _Phase.done;
 
   String get _skipLabel {
+    if (_phase == _Phase.calmablesPowerAdjust) return 'Schritt überspringen';
+    if (_phase == _Phase.baselineReady) return 'Baseline überspringen';
     if (_phase == _Phase.baselineRunning || _phase == _Phase.questionnaire) {
-      return 'Baseline überspringen';
+      return 'Rest der Baseline überspringen';
     }
-    if (_phase == _Phase.mastPrepare ||
-        _phase == _Phase.pendingTransition ||
+    if (_phase == _Phase.mastPrepare) return 'Gesamten MAST überspringen';
+    if (_phase == _Phase.pendingTransition ||
         _phase == _Phase.hit1Running ||
         _phase == _Phase.ma1Running ||
         _phase == _Phase.hit2Running ||
         _phase == _Phase.ma2Running ||
         _phase == _Phase.hit3Running ||
         _phase == _Phase.ma3Running) {
-      return 'MAST überspringen';
+      return 'Diese Phase überspringen';
     }
     return 'Schritt überspringen';
   }
@@ -467,7 +531,6 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
                 _showCharts
                     ? Icons.monitor_heart
                     : Icons.monitor_heart_outlined,
-                color: Colors.white,
               ),
               tooltip: 'Herzrate anzeigen',
               onPressed: _chartsAvailable
@@ -477,18 +540,14 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
             if (showRestartOption)
               TextButton.icon(
                 onPressed: _confirmRestartProtocol,
-                icon: const Icon(Icons.refresh, color: Colors.white),
-                label: const Text(
-                  'Restart',
-                  style: TextStyle(color: Colors.white),
-                ),
+                icon: const Icon(Icons.refresh),
+                label: const Text('Restart'),
               ),
           ],
         ),
         body: SafeArea(
           child: Column(
             children: [
-              if (_showCharts && _chartsAvailable) _buildChartsPanel(),
               Expanded(
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.all(24),
@@ -532,6 +591,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
                   ),
                 ),
               ),
+              if (_showCharts && _chartsAvailable) _buildChartsPanel(),
             ],
           ),
         ),
@@ -595,6 +655,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
   Widget _buildBody() {
     return switch (_phase) {
       _Phase.participantIdInput => _buildParticipantIdInput(),
+      _Phase.calmablesPowerAdjust => _buildCalmablesPowerAdjust(),
       _Phase.baselineReady => _buildBaselineReady(),
       _Phase.baselineRunning => _buildBaselineRunning(),
       _Phase.questionnaire => _buildQuestionnaire(),
@@ -655,13 +716,49 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
     );
   }
 
-  Widget _buildTransitionReady() => _buildReadyScreen(
-        icon: _transitionIcon,
-        title: _transitionTitle,
-        description: 'Bereit für den nächsten Schritt?',
-        buttonLabel: _transitionButtonLabel,
-        onStart: _transitionCallback ?? () {},
-      );
+  Widget _buildTransitionReady() {
+    return Column(
+      children: [
+        const SizedBox(height: 48),
+        Icon(_transitionIcon, size: 72, color: _kGreen),
+        const SizedBox(height: 24),
+        _phaseTitle(_transitionTitle),
+        if (_transitionIsMa) ...[
+          const SizedBox(height: 16),
+          Text(
+            'Startzahl',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '$_maStartNumber',
+            style: Theme.of(context).textTheme.displayMedium?.copyWith(
+              fontWeight: FontWeight.bold,
+              color: _kGreen,
+              letterSpacing: 4,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'VP nennt diese Zahl, dann fortlaufend −17',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
+            textAlign: TextAlign.center,
+          ),
+        ] else
+          const SizedBox(height: 8),
+        const SizedBox(height: 32),
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed: _transitionCallback ?? () {},
+            icon: Icon(_transitionIcon),
+            label: Text(_transitionButtonLabel),
+            style: _primaryStyle(),
+          ),
+        ),
+      ],
+    );
+  }
 
   Widget _buildBaselineReady() => _buildReadyScreen(
         icon: Icons.self_improvement_rounded,
@@ -766,6 +863,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
   }
 
   Widget _buildMaPhase(int number, int totalSeconds) {
+    final isFirstQuestion = _maExpectedAnswer == _maStartNumber;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
@@ -791,60 +889,66 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
           style: Theme.of(context).textTheme.bodyMedium,
         ),
         const Divider(height: 32),
+        // Question label
         Text(
-          '$_maCurrentNumber − 17 = ?',
-            style: Theme.of(context)
-                .textTheme
-                .bodyMedium
-                ?.copyWith(color: Colors.grey),
+          isFirstQuestion ? 'VP nennt die Startzahl' : '$_maCurrentNumber − 17 = ?',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          isFirstQuestion ? 'Erwartete Nennung' : 'Erwartete Antwort',
+          style: const TextStyle(color: Colors.grey, fontSize: 14),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '$_maExpectedAnswer',
+          style: Theme.of(context).textTheme.displayLarge?.copyWith(
+            fontWeight: FontWeight.bold,
+            color: isFirstQuestion ? _kGreen : Colors.orange.shade700,
           ),
-          const SizedBox(height: 4),
-          const Text(
-            'Erwartete Antwort',
-            style: TextStyle(color: Colors.grey, fontSize: 14),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '$_maExpectedAnswer',
-            style: Theme.of(context).textTheme.displayLarge?.copyWith(
-              fontWeight: FontWeight.bold,
-              color: Colors.orange.shade700,
-            ),
-          ),
-          const SizedBox(height: 8),
-          SizedBox(
-            width: 56,
-            height: 56,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                CircularProgressIndicator(
-                  value: _maJudgementCountdown / 5,
-                  strokeWidth: 5,
-                  backgroundColor: Colors.grey.shade200,
-                  valueColor: AlwaysStoppedAnimation(
-                    _maJudgementCountdown <= 2
-                        ? Colors.red
-                        : Colors.orange.shade600,
-                  ),
+        ),
+        const SizedBox(height: 8),
+        // Smooth judgement countdown ring
+        if (_judgementAnim != null)
+          AnimatedBuilder(
+            animation: _judgementAnim!,
+            builder: (ctx, _) {
+              final fraction = _judgementAnim!.value;
+              final secondsLeft = (fraction * 5).ceil().clamp(0, 5);
+              return SizedBox(
+                width: 56,
+                height: 56,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    CircularProgressIndicator(
+                      value: fraction,
+                      strokeWidth: 5,
+                      backgroundColor: Colors.grey.shade200,
+                      valueColor: AlwaysStoppedAnimation(
+                        fraction <= 0.4 ? Colors.red : Colors.orange.shade600,
+                      ),
+                    ),
+                    Text(
+                      '$secondsLeft',
+                      style: Theme.of(ctx).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
                 ),
-                Text(
-                  '$_maJudgementCountdown',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleLarge
-                      ?.copyWith(fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 20),
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: _onMaCorrect,
-                  icon: const Icon(Icons.check_rounded, size: 24),
+              );
+            },
+          )
+        else
+          const SizedBox(width: 56, height: 56),
+        const SizedBox(height: 20),
+        Row(
+          children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _onMaCorrect,
+                icon: const Icon(Icons.check_rounded, size: 24),
                   label: const Text('Richtig', style: TextStyle(fontSize: 16)),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.green.shade600,
@@ -876,7 +980,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
         icon: Icons.spa_rounded,
         title: 'Relaxationsphase',
         description:
-            'MAST abgeschlossen.\nBitte Versuchsperson zur Entspannung auffordern.\nDenken Sie daran, Calmables zu starten.',
+            'MAST abgeschlossen.\nBitte Versuchsperson zur Entspannung auffordern.',
         buttonLabel: 'Relaxation starten (15 min)',
         onStart: _startRelaxation,
       );
@@ -884,33 +988,12 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
   Widget _buildRelaxationRunning() {
     return Column(
       children: [
-        const SizedBox(height: 48),
+        const SizedBox(height: 32),
         _phaseTitle('Relaxation'),
         const SizedBox(height: 16),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          decoration: BoxDecoration(
-            color: _kGreen.withOpacity(0.12),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: const Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.tips_and_updates_rounded, color: _kGreen, size: 20),
-              SizedBox(width: 8),
-              Text(
-                'Calmables jetzt starten',
-                style: TextStyle(
-                  color: _kGreen,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 15,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 32),
         _timerDisplay(_phaseRemainingSeconds),
+        const SizedBox(height: 24),
+        _buildCalmablesControlPanel(showSavedValueMarker: true),
       ],
     );
   }
@@ -943,6 +1026,163 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
   }
 
   // ── Shared helpers ────────────────────────────────────────────────────────────
+
+  Widget _buildCalmablesPowerAdjust() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 32),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.tune_rounded, size: 36, color: _kGreen),
+            const SizedBox(width: 12),
+            _phaseTitle('Calmables einstellen'),
+          ],
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Stelle die Heizleistung ein, die für die Relaxationsphase verwendet werden soll.',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 15),
+        ),
+        const SizedBox(height: 24),
+        _buildCalmablesControlPanel(showSavedValueMarker: false),
+        const SizedBox(height: 32),
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed: () {
+              _calmablesPowerValue = _relaxationCurrentPwm;
+              _log('calmables_power_set_$_calmablesPowerValue');
+              setState(() => _phase = _Phase.baselineReady);
+            },
+            icon: const Icon(Icons.check_rounded),
+            label: const Text('Wert speichern & zur Baseline'),
+            style: _primaryStyle(),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCalmablesControlPanel({required bool showSavedValueMarker}) {
+    if (widget.onSendToCalmables == null) {
+      return const Padding(
+        padding: EdgeInsets.all(16),
+        child: Text(
+          'Kein Calmables-Gerät verbunden.',
+          style: TextStyle(color: Colors.grey),
+          textAlign: TextAlign.center,
+        ),
+      );
+    }
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.bolt_rounded, size: 18, color: _kGreen),
+                const SizedBox(width: 6),
+                Text(
+                  'Calmables Control',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                ),
+                const Spacer(),
+                // On/Off toggle
+                Row(
+                  children: [
+                    Text(_calmablesOn ? 'ON' : 'OFF',
+                        style: TextStyle(
+                          color: _calmablesOn ? _kGreen : Colors.grey,
+                          fontWeight: FontWeight.w600,
+                        )),
+                    const SizedBox(width: 6),
+                    Switch(
+                      value: _calmablesOn,
+                      activeColor: _kGreen,
+                      activeTrackColor: _kGreen.withOpacity(0.35),
+                      trackOutlineColor: WidgetStateProperty.resolveWith(
+                        (states) => states.contains(WidgetState.selected)
+                            ? _kGreen
+                            : Colors.grey.shade400,
+                      ),
+                      onChanged: (v) {
+                        setState(() => _calmablesOn = v);
+                        final pwm = v ? _relaxationCurrentPwm : 0;
+                        widget.onSendToCalmables!([pwm]);
+                      },
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            // Slider
+            Row(
+              children: [
+                const Text('0', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                Expanded(
+                  child: LayoutBuilder(
+                    builder: (ctx, constraints) {
+                      const sliderPad = 24.0;
+                      final trackWidth = constraints.maxWidth - 2 * sliderPad;
+                      final markerX = sliderPad + (_calmablesPowerValue / 255.0) * trackWidth;
+                      final alignment = 2 * markerX / constraints.maxWidth - 1;
+                      return Stack(
+                        children: [
+                          Slider(
+                            value: _relaxationCurrentPwm.toDouble(),
+                            min: 0,
+                            max: 255,
+                            divisions: 255,
+                            label: _relaxationCurrentPwm.toString(),
+                            activeColor: _kGreen,
+                            thumbColor: _kGreen,
+                            onChanged: (v) {
+                              setState(() {
+                                _relaxationCurrentPwm = v.round();
+                                if (_calmablesOn) widget.onSendToCalmables!([_relaxationCurrentPwm]);
+                              });
+                            },
+                          ),
+                          if (showSavedValueMarker && _calmablesPowerValue > 0)
+                            Positioned.fill(
+                              child: IgnorePointer(
+                                child: Align(
+                                  alignment: Alignment(alignment, 0),
+                                  child: Container(
+                                    width: 2,
+                                    height: 36,
+                                    color: Colors.grey.shade500,
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+                const Text('255', style: TextStyle(color: Colors.grey, fontSize: 12)),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Center(
+              child: Text(
+                'Leistung: $_relaxationCurrentPwm / 255'
+                '${showSavedValueMarker && _calmablesPowerValue > 0 ? "  ·  Gespeichert: $_calmablesPowerValue" : ""}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _buildReadyScreen({
     required IconData icon,
