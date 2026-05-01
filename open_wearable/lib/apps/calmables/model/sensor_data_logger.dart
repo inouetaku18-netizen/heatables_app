@@ -16,9 +16,11 @@ class SensorDataLogger {
   IOSink? _ppgSink;
   IOSink? _imuSink;
   IOSink? _metricsSink;
+  IOSink? _labelsSink;
   File? _ppgFile;
   File? _imuFile;
   File? _metricsFile;
+  File? _labelsFile;
 
   double? _lastHr;
   double? _lastLfhf;
@@ -36,17 +38,28 @@ class SensorDataLogger {
     Stream<PpgMotionSample>? imuStream,
     Stream<double?>? heartRateStream,
     Stream<double?>? lfhfStream,
+    String? participantId,
   }) async {
     if (_isLogging) return;
 
     final dir = await getApplicationDocumentsDirectory();
     final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-    final sessionDir = Directory('${dir.path}/calmables_logs/$timestamp');
+    final safeId = participantId != null
+        ? participantId.replaceAll(RegExp(r'[^\w\-]'), '_')
+        : null;
+    final folderName = safeId != null ? '${safeId}_$timestamp' : timestamp;
+    final filePrefix = safeId ?? timestamp;
+
+    final sessionDir = Directory('${dir.path}/calmables_logs/$folderName');
     await sessionDir.create(recursive: true);
 
-    _ppgFile = File('${sessionDir.path}/ppg_$timestamp.csv');
+    _ppgFile = File('${sessionDir.path}/ppg_$filePrefix.csv');
     _ppgSink = _ppgFile!.openWrite();
     _ppgSink!.writeln('timestamp,red,ir,green,ambient');
+
+    _labelsFile = File('${sessionDir.path}/labels_$filePrefix.csv');
+    _labelsSink = _labelsFile!.openWrite();
+    _labelsSink!.writeln('epoch_ms,label');
 
     _ppgSampleCount = 0;
     _imuSampleCount = 0;
@@ -61,7 +74,7 @@ class SensorDataLogger {
     });
 
     if (imuStream != null) {
-      _imuFile = File('${sessionDir.path}/imu_$timestamp.csv');
+      _imuFile = File('${sessionDir.path}/imu_$filePrefix.csv');
       _imuSink = _imuFile!.openWrite();
       _imuSink!.writeln('timestamp,x,y,z');
 
@@ -73,7 +86,7 @@ class SensorDataLogger {
       });
     }
 
-    _metricsFile = File('${sessionDir.path}/metrics_$timestamp.csv');
+    _metricsFile = File('${sessionDir.path}/metrics_$filePrefix.csv');
     _metricsSink = _metricsFile!.openWrite();
     _metricsSink!.writeln('epoch_ms,heart_rate_bpm,lfhf_ratio,pwm');
 
@@ -117,15 +130,26 @@ class SensorDataLogger {
     await _metricsSink?.close();
     _metricsSink = null;
 
+    await _labelsSink?.flush();
+    await _labelsSink?.close();
+    _labelsSink = null;
+
     final files = <String>[];
     if (_ppgFile != null) files.add(_ppgFile!.path);
     if (_imuFile != null) files.add(_imuFile!.path);
     if (_metricsFile != null) files.add(_metricsFile!.path);
+    if (_labelsFile != null) files.add(_labelsFile!.path);
 
     debugPrint(
       'SensorDataLogger: stopped. PPG samples: $_ppgSampleCount, IMU samples: $_imuSampleCount',
     );
     return files;
+  }
+
+  void logLabel(String label) {
+    if (!_isLogging) return;
+    final epochMs = DateTime.now().millisecondsSinceEpoch;
+    _labelsSink?.writeln('$epochMs,$label');
   }
 
   void logMetrics({required int pwm}) {

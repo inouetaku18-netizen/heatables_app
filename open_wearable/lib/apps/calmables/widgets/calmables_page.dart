@@ -14,6 +14,7 @@ import 'package:open_wearable/apps/calmables/model/hr_calibration.dart';
 import 'package:open_wearable/apps/calmables/widgets/rowling_chart.dart';
 import 'package:open_wearable/apps/calmables/widgets/rolling_hr_chart.dart';
 import 'package:open_wearable/apps/calmables/widgets/autopilot_page.dart';
+import 'package:open_wearable/apps/calmables/widgets/study_protocol_page.dart';
 import 'package:open_wearable/models/wearable_display_group.dart';
 import 'package:open_wearable/view_models/sensor_configuration_provider.dart';
 import 'package:open_wearable/widgets/devices/devices_page.dart';
@@ -524,6 +525,58 @@ class _CalmablesPageState extends State<CalmablesPage> {
     );
   }
 
+  Future<void> _onStartRecordingPressed() async {
+    final ppgStream = _rawPpgStream;
+    if (ppgStream == null) return;
+
+    final useProtocol = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Aufnahme starten'),
+        content: const Text('Mit Studienprotokoll aufnehmen?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Nein – Standard'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF009682),
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Ja – Mit Protokoll'),
+          ),
+        ],
+      ),
+    );
+    if (useProtocol == null || !mounted) return;
+
+    if (!useProtocol) {
+      await _dataLogger.start(
+        ppgStream: ppgStream,
+        imuStream: _rawImuStream,
+        heartRateStream: _heartRateStream,
+        lfhfStream: _hrvLfhfStream,
+      );
+      if (mounted) setState(() {});
+    } else {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => StudyProtocolPage(
+            dataLogger: _dataLogger,
+            ppgStream: ppgStream,
+            imuStream: _rawImuStream,
+            heartRateStream: _heartRateStream,
+            lfhfStream: _hrvLfhfStream,
+          ),
+        ),
+      );
+      if (mounted) setState(() {});
+    }
+  }
+
   Widget _buildLoggingCard(BuildContext context) {
     return Card(
       child: Padding(
@@ -563,17 +616,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
                   child: ElevatedButton.icon(
                     onPressed: _dataLogger.isLogging
                         ? null
-                        : () async {
-                            final ppgStream = _rawPpgStream;
-                            if (ppgStream == null) return;
-                            await _dataLogger.start(
-                              ppgStream: ppgStream,
-                              imuStream: _rawImuStream,
-                              heartRateStream: _heartRateStream,
-                              lfhfStream: _hrvLfhfStream,
-                            );
-                            setState(() {});
-                          },
+                        : _onStartRecordingPressed,
                     icon: const Icon(Icons.fiber_manual_record, size: 16),
                     label: const Text('Start'),
                     style: ElevatedButton.styleFrom(
