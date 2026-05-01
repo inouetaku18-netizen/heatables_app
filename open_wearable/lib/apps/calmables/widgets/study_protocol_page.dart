@@ -13,6 +13,7 @@ enum _Phase {
   baselineRunning,
   questionnaire,
   mastPrepare,
+  pendingTransition,
   hit1Running,
   ma1Running,
   hit2Running,
@@ -23,8 +24,6 @@ enum _Phase {
   relaxationRunning,
   done,
 }
-
-enum _MaSubState { awaitingConfirm, awaitingJudgement }
 
 class StudyProtocolPage extends StatefulWidget {
   final SensorDataLogger dataLogger;
@@ -65,7 +64,6 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
   int _phaseRemainingSeconds = 0;
 
   // MA state
-  _MaSubState _maSubState = _MaSubState.awaitingConfirm;
   int _maStartNumber = 0;   // fixed x for the current MA block
   int _maCurrentNumber = 0;
   int _maExpectedAnswer = 0;
@@ -77,6 +75,13 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
 
   // UI toggles
   bool _showCharts = false;
+
+  // Transition screen state
+  String _transitionTitle = '';
+  String _transitionButtonLabel = '';
+  IconData _transitionIcon = Icons.play_arrow_rounded;
+  VoidCallback? _transitionCallback;
+  VoidCallback? _transitionBackCallback;
 
   static const _kGreen = Color(0xFF009682);
 
@@ -165,7 +170,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
 
   void _startMast() {
     _log('mast_start');
-    _beginHit(1, 90, _startMa1);
+    _beginHit(1, 90, _readyMa1);
   }
 
   void _beginHit(int number, int durationSeconds, VoidCallback onDone) {
@@ -188,14 +193,17 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
     _maWrongCount = 0;
     _maStartNumber = _randomMaStart();
     _maCurrentNumber = _maStartNumber;
-    _maSubState = _MaSubState.awaitingConfirm;
+    _maExpectedAnswer = _maCurrentNumber - 17;
     _log('ma_${number}_start_x_$_maStartNumber');
     final phase = switch (number) {
       1 => _Phase.ma1Running,
       2 => _Phase.ma2Running,
       _ => _Phase.ma3Running,
     };
-    setState(() => _phase = phase);
+    setState(() {
+      _phase = phase;
+    });
+    _startJudgementCountdown();
     _startPhaseTimer(durationSeconds, () {
       _maJudgementTimer?.cancel();
       _log('ma_${number}_end');
@@ -203,19 +211,35 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
     });
   }
 
-  void _startMa1() => _beginMa(1, 45, () => _beginHit(2, 60, _startMa2));
-  void _startMa2() => _beginMa(2, 60, () => _beginHit(3, 60, _startMa3));
+  void _awaitTransition(String title, String buttonLabel, IconData icon, VoidCallback callback, {VoidCallback? backCallback}) {
+    setState(() {
+      _phase = _Phase.pendingTransition;
+      _transitionTitle = title;
+      _transitionButtonLabel = buttonLabel;
+      _transitionIcon = icon;
+      _transitionCallback = callback;
+      _transitionBackCallback = backCallback;
+    });
+  }
+
+  void _readyMa1() => _awaitTransition('Kopfrechnen 1', 'Kopfrechnen starten', Icons.calculate_rounded, _startMa1,
+      backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _beginHit(1, 90, _readyMa1); });
+  void _startMa1() => _beginMa(1, 45, _readyHit2);
+  void _readyHit2() => _awaitTransition('Hand Immersion 2', 'Hand Immersion starten', Icons.water_rounded, _doHit2,
+      backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _beginMa(1, 45, _readyHit2); });
+  void _doHit2() => _beginHit(2, 60, _readyMa2);
+  void _readyMa2() => _awaitTransition('Kopfrechnen 2', 'Kopfrechnen starten', Icons.calculate_rounded, _startMa2,
+      backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _beginHit(2, 60, _readyMa2); });
+  void _startMa2() => _beginMa(2, 60, _readyHit3);
+  void _readyHit3() => _awaitTransition('Hand Immersion 3', 'Hand Immersion starten', Icons.water_rounded, _doHit3,
+      backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _beginMa(2, 60, _readyHit3); });
+  void _doHit3() => _beginHit(3, 60, _readyMa3);
+  void _readyMa3() => _awaitTransition('Kopfrechnen 3', 'Kopfrechnen starten', Icons.calculate_rounded, _startMa3,
+      backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _beginHit(3, 60, _readyMa3); });
   void _startMa3() => _beginMa(3, 90, () {
         _log('mast_end');
         if (mounted) setState(() => _phase = _Phase.relaxationReady);
       });
-
-  void _onMaConfirm() {
-    _maExpectedAnswer = _maCurrentNumber - 17;
-    _log('ma_confirm');
-    setState(() => _maSubState = _MaSubState.awaitingJudgement);
-    _startJudgementCountdown();
-  }
 
   void _onMaCorrect() {
     _maJudgementTimer?.cancel();
@@ -223,7 +247,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
     _maCurrentNumber = _maExpectedAnswer;
     _log('ma_correct_${_maExpectedAnswer}');
     _maExpectedAnswer = _maCurrentNumber - 17;
-    setState(() => _maSubState = _MaSubState.awaitingJudgement);
+    setState(() {});
     _startJudgementCountdown();
   }
 
@@ -231,18 +255,18 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
     _maJudgementTimer?.cancel();
     _maWrongCount++;
     _maCurrentNumber = _maStartNumber;
-    _log('ma_wrong_restart_from_x_$_maStartNumber');
     _maExpectedAnswer = _maCurrentNumber - 17;
-    setState(() => _maSubState = _MaSubState.awaitingJudgement);
+    _log('ma_wrong_restart_from_x_$_maStartNumber');
+    setState(() {});
     _startJudgementCountdown();
   }
 
   void _onMaTimeout() {
     _maWrongCount++;
     _maCurrentNumber = _maStartNumber;
-    _log('ma_timeout_restart_from_x_$_maStartNumber');
     _maExpectedAnswer = _maCurrentNumber - 17;
-    setState(() => _maSubState = _MaSubState.awaitingJudgement);
+    _log('ma_timeout_restart_from_x_$_maStartNumber');
+    setState(() {});
     _startJudgementCountdown();
   }
 
@@ -270,30 +294,21 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
     _maJudgementTimer?.cancel();
     _log('skip_${_phase.name}');
     switch (_phase) {
+      // Baseline: skip entire baseline section → MAST preparation
       case _Phase.baselineRunning:
         _log('baseline_end');
-        setState(() => _phase = _Phase.questionnaire);
+        setState(() => _phase = _Phase.mastPrepare);
       case _Phase.questionnaire:
         setState(() => _phase = _Phase.mastPrepare);
+      // MAST: skip entire remaining MAST → relaxation
       case _Phase.mastPrepare:
-        _startMast();
+      case _Phase.pendingTransition:
       case _Phase.hit1Running:
-        _log('hit_1_end');
-        _startMa1();
       case _Phase.ma1Running:
-        _log('ma_1_end');
-        _beginHit(2, 60, _startMa2);
       case _Phase.hit2Running:
-        _log('hit_2_end');
-        _startMa2();
       case _Phase.ma2Running:
-        _log('ma_2_end');
-        _beginHit(3, 60, _startMa3);
       case _Phase.hit3Running:
-        _log('hit_3_end');
-        _startMa3();
       case _Phase.ma3Running:
-        _log('ma_3_end');
         _log('mast_end');
         setState(() => _phase = _Phase.relaxationReady);
       case _Phase.relaxationReady:
@@ -306,10 +321,66 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
     }
   }
 
+  void _goBack() {
+    _phaseTimer?.cancel();
+    _maJudgementTimer?.cancel();
+    _log('back_${_phase.name}');
+    switch (_phase) {
+      case _Phase.baselineRunning:
+        setState(() { _phase = _Phase.baselineReady; _phaseRemainingSeconds = 0; });
+      case _Phase.questionnaire:
+        setState(() { _phase = _Phase.baselineReady; _phaseRemainingSeconds = 0; });
+      case _Phase.mastPrepare:
+        setState(() => _phase = _Phase.questionnaire);
+      case _Phase.pendingTransition:
+        _transitionBackCallback?.call();
+      case _Phase.hit1Running:
+        setState(() => _phase = _Phase.mastPrepare);
+      case _Phase.ma1Running:
+        _beginHit(1, 90, _readyMa1);
+      case _Phase.hit2Running:
+        _beginMa(1, 45, _readyHit2);
+      case _Phase.ma2Running:
+        _beginHit(2, 60, _readyMa2);
+      case _Phase.hit3Running:
+        _beginMa(2, 60, _readyHit3);
+      case _Phase.ma3Running:
+        _beginHit(3, 60, _readyMa3);
+      case _Phase.relaxationReady:
+        setState(() => _phase = _Phase.mastPrepare);
+      case _Phase.relaxationRunning:
+        setState(() { _phase = _Phase.relaxationReady; _phaseRemainingSeconds = 0; });
+      default:
+        break;
+    }
+  }
+
   bool get _phaseIsSkippable =>
       _phase != _Phase.participantIdInput &&
       _phase != _Phase.baselineReady &&
       _phase != _Phase.done;
+
+  bool get _canGoBack =>
+      _phase != _Phase.participantIdInput &&
+      _phase != _Phase.baselineReady &&
+      _phase != _Phase.done;
+
+  String get _skipLabel {
+    if (_phase == _Phase.baselineRunning || _phase == _Phase.questionnaire) {
+      return 'Baseline überspringen';
+    }
+    if (_phase == _Phase.mastPrepare ||
+        _phase == _Phase.pendingTransition ||
+        _phase == _Phase.hit1Running ||
+        _phase == _Phase.ma1Running ||
+        _phase == _Phase.hit2Running ||
+        _phase == _Phase.ma2Running ||
+        _phase == _Phase.hit3Running ||
+        _phase == _Phase.ma3Running) {
+      return 'MAST überspringen';
+    }
+    return 'Schritt überspringen';
+  }
 
   bool get _chartsAvailable =>
       widget.displayPpgStream != null ||
@@ -391,17 +462,18 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
             onPressed: _onBackPressed,
           ),
           actions: [
-            if (_chartsAvailable)
-              IconButton(
-                icon: Icon(
-                  _showCharts
-                      ? Icons.monitor_heart
-                      : Icons.monitor_heart_outlined,
-                  color: Colors.white,
-                ),
-                tooltip: 'Herzrate anzeigen',
-                onPressed: () => setState(() => _showCharts = !_showCharts),
+            IconButton(
+              icon: Icon(
+                _showCharts
+                    ? Icons.monitor_heart
+                    : Icons.monitor_heart_outlined,
+                color: Colors.white,
               ),
+              tooltip: 'Herzrate anzeigen',
+              onPressed: _chartsAvailable
+                  ? () => setState(() => _showCharts = !_showCharts)
+                  : null,
+            ),
             if (showRestartOption)
               TextButton.icon(
                 onPressed: _confirmRestartProtocol,
@@ -423,17 +495,37 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
                   child: Column(
                     children: [
                       _buildBody(),
-                      if (_phaseIsSkippable) ...[                        const SizedBox(height: 24),
-                        TextButton.icon(
-                          onPressed: _skipPhase,
-                          icon: const Icon(
-                            Icons.skip_next_rounded,
-                            color: Colors.grey,
-                          ),
-                          label: const Text(
-                            'Schritt überspringen',
-                            style: TextStyle(color: Colors.grey),
-                          ),
+                      if (_phaseIsSkippable || _canGoBack) ...[                        const SizedBox(height: 24),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            if (_canGoBack)
+                              TextButton.icon(
+                                onPressed: _goBack,
+                                icon: const Icon(
+                                  Icons.arrow_back_rounded,
+                                  color: Colors.grey,
+                                ),
+                                label: const Text(
+                                  'Zurück',
+                                  style: TextStyle(color: Colors.grey),
+                                ),
+                              ),
+                            if (_canGoBack && _phaseIsSkippable)
+                              const SizedBox(width: 16),
+                            if (_phaseIsSkippable)
+                              TextButton.icon(
+                                onPressed: _skipPhase,
+                                icon: const Icon(
+                                  Icons.skip_next_rounded,
+                                  color: Colors.grey,
+                                ),
+                                label: Text(
+                                  _skipLabel,
+                                  style: const TextStyle(color: Colors.grey),
+                                ),
+                              ),
+                          ],
                         ),
                       ],
                     ],
@@ -507,6 +599,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
       _Phase.baselineRunning => _buildBaselineRunning(),
       _Phase.questionnaire => _buildQuestionnaire(),
       _Phase.mastPrepare => _buildMastPrepare(),
+      _Phase.pendingTransition => _buildTransitionReady(),
       _Phase.hit1Running => _buildHitPhase(1, 90),
       _Phase.ma1Running => _buildMaPhase(1, 45),
       _Phase.hit2Running => _buildHitPhase(2, 60),
@@ -561,6 +654,14 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
       ],
     );
   }
+
+  Widget _buildTransitionReady() => _buildReadyScreen(
+        icon: _transitionIcon,
+        title: _transitionTitle,
+        description: 'Bereit für den nächsten Schritt?',
+        buttonLabel: _transitionButtonLabel,
+        onStart: _transitionCallback ?? () {},
+      );
 
   Widget _buildBaselineReady() => _buildReadyScreen(
         icon: Icons.self_improvement_rounded,
@@ -690,39 +791,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
           style: Theme.of(context).textTheme.bodyMedium,
         ),
         const Divider(height: 32),
-        if (_maSubState == _MaSubState.awaitingConfirm) ...[
-          const Text(
-            'Aktuelle Zahl',
-            style: TextStyle(color: Colors.grey, fontSize: 14),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '$_maCurrentNumber',
-            style: Theme.of(context).textTheme.displayLarge?.copyWith(
-              fontWeight: FontWeight.bold,
-              color: _kGreen,
-            ),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            '− 17 = ?',
-            style: TextStyle(fontSize: 22, color: Colors.grey),
-          ),
-          const SizedBox(height: 24),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: _onMaConfirm,
-              style: _primaryStyle(),
-              child: const Padding(
-                padding: EdgeInsets.symmetric(vertical: 4),
-                child: Text('Antwort bestätigen', style: TextStyle(fontSize: 18)),
-              ),
-            ),
-          ),
-        ] else ...[
-          Text(
-            '$_maCurrentNumber − 17 = ?',
+        Text(
+          '$_maCurrentNumber − 17 = ?',
             style: Theme.of(context)
                 .textTheme
                 .bodyMedium
@@ -798,7 +868,6 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> {
               ),
             ],
           ),
-        ],
       ],
     );
   }
