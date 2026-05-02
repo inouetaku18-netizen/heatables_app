@@ -12,7 +12,7 @@ enum _Phase {
   calmablesPowerAdjust,
   baselineReady,
   baselineRunning,
-  questionnaire,
+  surveyHintPreMast,
   mastPrepare,
   pendingTransition,
   hit1Running,
@@ -21,8 +21,11 @@ enum _Phase {
   ma2Running,
   hit3Running,
   ma3Running,
+  surveyHintPostMast,
   relaxationReady,
   relaxationRunning,
+  surveyHintFinal,
+  questionnaire,
   done,
 }
 
@@ -172,7 +175,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
     setState(() => _phase = _Phase.baselineRunning);
     _startPhaseTimer(5 * 60, () {
       _log('baseline_end');
-      if (mounted) setState(() => _phase = _Phase.questionnaire);
+      if (mounted) setState(() => _phase = _Phase.surveyHintPreMast);
     });
   }
 
@@ -271,11 +274,11 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
     _transitionIsMa = true;
     _awaitTransition('Kopfrechnen 3', 'Kopfrechnen starten', Icons.calculate_rounded, _startMa3,
         backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _judgementAnim?.stop(); _beginHit(3, 60, _readyMa3); },
-        skipCallback: () { _log('ma_3_skip'); _log('mast_end'); setState(() => _phase = _Phase.relaxationReady); });
+        skipCallback: () { _log('ma_3_skip'); _log('mast_end'); setState(() => _phase = _Phase.surveyHintPostMast); });
   }
   void _startMa3() => _beginMa(3, 90, () {
         _log('mast_end');
-        if (mounted) setState(() => _phase = _Phase.relaxationReady);
+        if (mounted) setState(() => _phase = _Phase.surveyHintPostMast);
       });
 
   void _onMaCorrect() {
@@ -314,7 +317,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
     setState(() => _phase = _Phase.relaxationRunning);
     _startPhaseTimer(15 * 60, () {
       _log('relaxation_end');
-      if (mounted) setState(() => _phase = _Phase.done);
+      if (mounted) setState(() => _phase = _Phase.surveyHintFinal);
     });
   }
 
@@ -336,15 +339,18 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
       case _Phase.calmablesPowerAdjust:
         setState(() => _phase = _Phase.baselineReady);
       case _Phase.baselineReady:
-        _startBaseline();
+        _log('baseline_end');
+        setState(() => _phase = _Phase.surveyHintPreMast);
       case _Phase.baselineRunning:
         _log('baseline_end');
-        setState(() => _phase = _Phase.questionnaire);
-      case _Phase.questionnaire:
+        setState(() => _phase = _Phase.surveyHintPreMast);
+      case _Phase.surveyHintPreMast:
         setState(() => _phase = _Phase.mastPrepare);
       // mastPrepare: skip entire MAST
       case _Phase.mastPrepare:
         _log('mast_end');
+        setState(() => _phase = _Phase.surveyHintPostMast);
+      case _Phase.surveyHintPostMast:
         setState(() => _phase = _Phase.relaxationReady);
       // Individual MAST phases: skip only that phase
       case _Phase.pendingTransition:
@@ -370,11 +376,16 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
         _log('hit_3_end'); _readyMa3();
       case _Phase.ma3Running:
         _maJudgementTimer?.cancel(); _log('ma_3_end'); _log('mast_end');
-        setState(() => _phase = _Phase.relaxationReady);
+        setState(() => _phase = _Phase.surveyHintPostMast);
       case _Phase.relaxationReady:
-        _startRelaxation();
+        _log('relaxation_skip');
+        setState(() => _phase = _Phase.surveyHintFinal);
       case _Phase.relaxationRunning:
         _log('relaxation_end');
+        setState(() => _phase = _Phase.surveyHintFinal);
+      case _Phase.surveyHintFinal:
+        setState(() => _phase = _Phase.questionnaire);
+      case _Phase.questionnaire:
         setState(() => _phase = _Phase.done);
       default:
         break;
@@ -392,10 +403,16 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
         setState(() => _phase = _Phase.calmablesPowerAdjust);
       case _Phase.baselineRunning:
         setState(() { _phase = _Phase.baselineReady; _phaseRemainingSeconds = 0; });
-      case _Phase.questionnaire:
-        setState(() { _phase = _Phase.baselineReady; _phaseRemainingSeconds = 0; });
+      case _Phase.surveyHintPreMast:
+        setState(() => _phase = _Phase.baselineReady);
       case _Phase.mastPrepare:
-        setState(() => _phase = _Phase.questionnaire);
+        setState(() => _phase = _Phase.surveyHintPreMast);
+      case _Phase.surveyHintPostMast:
+        setState(() => _phase = _Phase.mastPrepare);
+      case _Phase.surveyHintFinal:
+        setState(() { _phase = _Phase.relaxationReady; _phaseRemainingSeconds = 0; });
+      case _Phase.questionnaire:
+        setState(() => _phase = _Phase.surveyHintFinal);
       case _Phase.pendingTransition:
         _transitionBackCallback?.call();
       case _Phase.hit1Running:
@@ -411,7 +428,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
       case _Phase.ma3Running:
         _beginHit(3, 60, _readyMa3);
       case _Phase.relaxationReady:
-        setState(() => _phase = _Phase.mastPrepare);
+        setState(() => _phase = _Phase.surveyHintPostMast);
       case _Phase.relaxationRunning:
         setState(() { _phase = _Phase.relaxationReady; _phaseRemainingSeconds = 0; });
       default:
@@ -421,6 +438,10 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
 
   bool get _phaseIsSkippable =>
       _phase != _Phase.participantIdInput &&
+      _phase != _Phase.surveyHintPreMast &&
+      _phase != _Phase.surveyHintPostMast &&
+      _phase != _Phase.surveyHintFinal &&
+      _phase != _Phase.questionnaire &&
       _phase != _Phase.done;
 
   bool get _canGoBack =>
@@ -430,10 +451,10 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
   String get _skipLabel {
     if (_phase == _Phase.calmablesPowerAdjust) return 'Schritt überspringen';
     if (_phase == _Phase.baselineReady) return 'Baseline überspringen';
-    if (_phase == _Phase.baselineRunning || _phase == _Phase.questionnaire) {
-      return 'Rest der Baseline überspringen';
-    }
-    if (_phase == _Phase.mastPrepare) return 'Gesamten MAST überspringen';
+    if (_phase == _Phase.baselineRunning) return 'Rest der Baseline überspringen';
+    if (_phase == _Phase.mastPrepare) return 'MAST überspringen';
+    if (_phase == _Phase.relaxationReady) return 'Entspannung überspringen';
+    if (_phase == _Phase.relaxationRunning) return 'Rest der Entspannung überspringen';
     if (_phase == _Phase.pendingTransition ||
         _phase == _Phase.hit1Running ||
         _phase == _Phase.ma1Running ||
@@ -601,52 +622,142 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
 
   Widget _buildChartsPanel() {
     return Container(
-      color: Colors.black,
+      color: Theme.of(context).colorScheme.surface,
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // HR BPM + PPG Quality row
+          Row(
+            children: [
+              if (widget.heartRateStream != null)
+                Expanded(
+                  child: StreamBuilder<double?>(
+                    stream: widget.heartRateStream,
+                    builder: (ctx, snap) {
+                      final bpm = snap.data;
+                      return _ChartMetricCard(
+                        icon: Icons.favorite_rounded,
+                        title: 'Heart Rate',
+                        value: bpm != null && bpm.isFinite ? bpm.toStringAsFixed(0) : '--',
+                        unit: 'BPM',
+                        iconColor: _kGreen,
+                      );
+                    },
+                  ),
+                ),
+              if (widget.heartRateStream != null && widget.signalQualityStream != null)
+                const SizedBox(width: 12),
+              if (widget.signalQualityStream != null)
+                Expanded(
+                  child: StreamBuilder<PpgSignalQuality>(
+                    stream: widget.signalQualityStream,
+                    initialData: PpgSignalQuality.unavailable,
+                    builder: (ctx, snap) {
+                      final q = snap.data ?? PpgSignalQuality.unavailable;
+                      final cs = Theme.of(ctx).colorScheme;
+                      final (label, hint, icon, color) = switch (q) {
+                        PpgSignalQuality.good => ('Good', 'Signal quality is good.', Icons.check_circle_rounded, const Color(0xFF8CB63C)),
+                        PpgSignalQuality.fair => ('Fair', 'Heartbeat is visible.', Icons.network_check_rounded, Colors.orange.shade700),
+                        PpgSignalQuality.bad => ('Bad', 'Signal is noisy.', Icons.signal_cellular_connected_no_internet_4_bar_rounded, cs.error),
+                        PpgSignalQuality.unavailable => ('Unavailable', 'No stable heartbeat.', Icons.portable_wifi_off_rounded, cs.onSurfaceVariant),
+                      };
+                      return Card(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                                Row(children: [
+                                  Icon(icon, size: 16, color: color),
+                                  const SizedBox(width: 6),
+                                  Text('PPG', style: Theme.of(ctx).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+                                ]),
+                                Container(
+                                  decoration: BoxDecoration(
+                                    color: color.withValues(alpha: 0.14),
+                                    borderRadius: BorderRadius.circular(999),
+                                  ),
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                  child: Text(label,
+                                      style: Theme.of(ctx).textTheme.labelMedium?.copyWith(color: color, fontWeight: FontWeight.w700)),
+                                ),
+                              ]),
+                              const SizedBox(height: 6),
+                              Text(hint,
+                                  style: Theme.of(ctx).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+            ],
+          ),
+          // PPG chart card
           if (widget.displayPpgStream != null) ...[
-            const Padding(
-              padding: EdgeInsets.only(top: 4, left: 8),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  'PPG',
-                  style: TextStyle(color: Colors.white60, fontSize: 10),
+            const SizedBox(height: 10),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      const Icon(Icons.show_chart_rounded, size: 16, color: _kGreen),
+                      const SizedBox(width: 6),
+                      Text('PPG', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+                    ]),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      height: 88,
+                      child: RollingChart(
+                        dataSteam: widget.displayPpgStream!,
+                        timestampExponent: widget.timestampExponent,
+                        timeWindow: 5,
+                        showXAxis: false,
+                        showYAxis: false,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
-            SizedBox(
-              height: 80,
-              child: RollingChart(
-                dataSteam: widget.displayPpgStream!,
-                timestampExponent: widget.timestampExponent,
-                timeWindow: 10,
-                showXAxis: false,
-              ),
-            ),
           ],
+          // HR chart card
           if (widget.rawHrStream != null && widget.smoothedHrStream != null) ...[
-            const Padding(
-              padding: EdgeInsets.only(top: 2, left: 8),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  'HR (bpm)',
-                  style: TextStyle(color: Colors.white60, fontSize: 10),
+            const SizedBox(height: 10),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      const Icon(Icons.favorite_rounded, size: 16, color: _kGreen),
+                      const SizedBox(width: 6),
+                      Text('Heart Rate (60s)', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+                    ]),
+                    const SizedBox(height: 4),
+                    Text('Grau: RR-Intervall HR · Rot: Kalman-gefiltert',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _kGreen)),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      height: 120,
+                      child: RollingHrChart(
+                        rawHrStream: widget.rawHrStream!,
+                        smoothedHrStream: widget.smoothedHrStream!,
+                        timestampExponent: widget.timestampExponent,
+                        timeWindow: 60,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
-            SizedBox(
-              height: 80,
-              child: RollingHrChart(
-                rawHrStream: widget.rawHrStream!,
-                smoothedHrStream: widget.smoothedHrStream!,
-                timestampExponent: widget.timestampExponent,
-                timeWindow: 60,
-              ),
-            ),
           ],
-          const SizedBox(height: 4),
         ],
       ),
     );
@@ -658,7 +769,11 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
       _Phase.calmablesPowerAdjust => _buildCalmablesPowerAdjust(),
       _Phase.baselineReady => _buildBaselineReady(),
       _Phase.baselineRunning => _buildBaselineRunning(),
-      _Phase.questionnaire => _buildQuestionnaire(),
+      _Phase.surveyHintPreMast => _buildSurveyHint(
+          nextPhase: _Phase.mastPrepare,
+          nextLabel: 'Weiter zum MAST',
+          showUxHint: false,
+        ),
       _Phase.mastPrepare => _buildMastPrepare(),
       _Phase.pendingTransition => _buildTransitionReady(),
       _Phase.hit1Running => _buildHitPhase(1, 90),
@@ -667,8 +782,19 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
       _Phase.ma2Running => _buildMaPhase(2, 60),
       _Phase.hit3Running => _buildHitPhase(3, 60),
       _Phase.ma3Running => _buildMaPhase(3, 90),
+      _Phase.surveyHintPostMast => _buildSurveyHint(
+          nextPhase: _Phase.relaxationReady,
+          nextLabel: 'Weiter zur Entspannung',
+          showUxHint: false,
+        ),
       _Phase.relaxationReady => _buildRelaxationReady(),
       _Phase.relaxationRunning => _buildRelaxationRunning(),
+      _Phase.surveyHintFinal => _buildSurveyHint(
+          nextPhase: _Phase.questionnaire,
+          nextLabel: 'Weiter zum UX-Fragebogen',
+          showUxHint: true,
+        ),
+      _Phase.questionnaire => _buildQuestionnaire(),
       _Phase.done => _buildDone(),
     };
   }
@@ -786,6 +912,38 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
     );
   }
 
+  Widget _buildSurveyHint({
+    required _Phase nextPhase,
+    required String nextLabel,
+    required bool showUxHint,
+  }) {
+    return Column(
+      children: [
+        const SizedBox(height: 48),
+        const Icon(Icons.assignment_turned_in_rounded, size: 72, color: _kGreen),
+        const SizedBox(height: 24),
+        _phaseTitle('Survey ausfüllen'),
+        const SizedBox(height: 16),
+        Text(
+          showUxHint
+              ? 'Bitte die Versuchsperson auffordern, jetzt die Survey auszufüllen.\n\nAnschließend folgt der UX-Fragebogen.'
+              : 'Bitte die Versuchsperson auffordern, jetzt die Survey auszufüllen.',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 16),
+        ),
+        const SizedBox(height: 40),
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton(
+            onPressed: () => setState(() => _phase = nextPhase),
+            style: _primaryStyle(),
+            child: Text(nextLabel),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildQuestionnaire() {
     return Column(
       children: [
@@ -803,9 +961,9 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
         SizedBox(
           width: double.infinity,
           child: ElevatedButton(
-            onPressed: () => setState(() => _phase = _Phase.mastPrepare),
+            onPressed: () => setState(() => _phase = _Phase.done),
             style: _primaryStyle(),
-            child: const Text('Weiter zum MAST'),
+            child: const Text('Protokoll abschließen'),
           ),
         ),
       ],
@@ -1134,6 +1292,19 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
                       final alignment = 2 * markerX / constraints.maxWidth - 1;
                       return Stack(
                         children: [
+                          if (showSavedValueMarker && _calmablesPowerValue > 0)
+                            Positioned.fill(
+                              child: IgnorePointer(
+                                child: Align(
+                                  alignment: Alignment(alignment, 0),
+                                  child: Container(
+                                    width: 2,
+                                    height: 36,
+                                    color: Colors.grey.shade500,
+                                  ),
+                                ),
+                              ),
+                            ),
                           Slider(
                             value: _relaxationCurrentPwm.toDouble(),
                             min: 0,
@@ -1149,19 +1320,6 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
                               });
                             },
                           ),
-                          if (showSavedValueMarker && _calmablesPowerValue > 0)
-                            Positioned.fill(
-                              child: IgnorePointer(
-                                child: Align(
-                                  alignment: Alignment(alignment, 0),
-                                  child: Container(
-                                    width: 2,
-                                    height: 36,
-                                    color: Colors.grey.shade500,
-                                  ),
-                                ),
-                              ),
-                            ),
                         ],
                       );
                     },
@@ -1238,4 +1396,51 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
         foregroundColor: Colors.white,
         padding: const EdgeInsets.symmetric(vertical: 16),
       );
+}
+
+class _ChartMetricCard extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String value;
+  final String unit;
+  final Color iconColor;
+
+  const _ChartMetricCard({
+    required this.icon,
+    required this.title,
+    required this.value,
+    required this.unit,
+    required this.iconColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Icon(icon, size: 16, color: iconColor),
+              const SizedBox(width: 6),
+              Text(title, style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+            ]),
+            const SizedBox(height: 6),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(value, style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700)),
+                const SizedBox(width: 4),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 3),
+                  child: Text(unit, style: Theme.of(context).textTheme.labelLarge),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
