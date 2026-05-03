@@ -34,6 +34,8 @@ enum _Phase {
   done,
 }
 
+enum _BlockOrder { treatmentFirst, controlFirst }
+
 class StudyProtocolPage extends StatefulWidget {
   final SensorDataLogger dataLogger;
   final Stream<PpgOpticalSample> ppgStream;
@@ -110,6 +112,10 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
   VoidCallback?
       _transitionSkipCallback; // for MA transitions: jumps past the MA
 
+  // Block protocol order (set at ID input)
+  _BlockOrder _blockOrder = _BlockOrder.treatmentFirst;
+  int _currentBlockNumber = 1; // 1 or 2
+
   // Dashboard WebSocket server
   HttpServer? _wsServer;
   final List<WebSocket> _wsClients = [];
@@ -177,8 +183,11 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
     }
   }
 
-  int get _dashboardAmountCents =>
-      (4000 - _totalMaWrongCount * 20).clamp(2000, 4000);
+  int get _dashboardAmountCents {
+    // Block 1: minimum 30€ (3000 ct), Block 2: minimum 20€ (2000 ct)
+    final minCents = _currentBlockNumber == 1 ? 3000 : 2000;
+    return (4000 - _totalMaWrongCount * 20).clamp(minCents, 4000);
+  }
 
   int get _dashboardDeductionCents => 4000 - _dashboardAmountCents;
 
@@ -244,7 +253,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
           if (_dashboardTimerRunning) {
             _onMaWrong();
           } else {
-            if (_dashboardAmountCents > 2000) {
+            final minCents = _currentBlockNumber == 1 ? 3000 : 2000;
+            if (_dashboardAmountCents > minCents) {
               setState(() {
                 _maWrongCount++;
               });
@@ -548,9 +558,27 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
     _maJudgementTimer?.cancel();
     _log('protocol_restart');
     setState(() {
-      _phase = _Phase.baselineReady;
+      _phase = _Phase.akklimatisation;
       _phaseRemainingSeconds = 0;
+      _maCorrectCount = 0;
+      _maWrongCount = 0;
     });
+  }
+
+  void _onBlockComplete() {
+    _log('block_${_currentBlockNumber}_end_${_isCurrentBlockTreatment ? 'treatment' : 'control'}');
+    if (_currentBlockNumber == 1) {
+      setState(() {
+        _currentBlockNumber = 2;
+        // _totalMaWrongCount intentionally kept — dashboard score persists across blocks
+        _maWrongCount = 0;
+        _maCorrectCount = 0;
+        _phase = _Phase.akklimatisation;
+      });
+      _log('block_2_start_${_isCurrentBlockTreatment ? 'treatment' : 'control'}');
+    } else {
+      setState(() => _phase = _Phase.done);
+    }
   }
 
   void _skipPhase() {
@@ -620,9 +648,13 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
         _log('relaxation_end');
         setState(() => _phase = _Phase.surveyHintFinal);
       case _Phase.surveyHintFinal:
-        setState(() => _phase = _Phase.questionnaire);
+        if (_isCurrentBlockTreatment) {
+          setState(() => _phase = _Phase.questionnaire);
+        } else {
+          _onBlockComplete();
+        }
       case _Phase.questionnaire:
-        setState(() => _phase = _Phase.done);
+        _onBlockComplete();
       default:
         break;
     }
@@ -728,6 +760,9 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
     return 'Schritt überspringen';
   }
 
+  bool get _isCurrentBlockTreatment =>
+      (_blockOrder == _BlockOrder.treatmentFirst) == (_currentBlockNumber == 1);
+
   bool get _chartsAvailable =>
       widget.displayPpgStream != null ||
       (widget.rawHrStream != null && widget.smoothedHrStream != null);
@@ -808,6 +843,40 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
             onPressed: _onBackPressed,
           ),
           actions: [
+            if (_phase != _Phase.participantIdInput &&
+                _phase != _Phase.syncDevices &&
+                _phase != _Phase.calmablesPowerAdjust)
+              Padding(
+                padding: const EdgeInsets.only(right: 2),
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: _isCurrentBlockTreatment
+                          ? _kGreen.withValues(alpha: 0.15)
+                          : Colors.blue.shade50,
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                        color: _isCurrentBlockTreatment
+                            ? _kGreen
+                            : Colors.blue.shade300,
+                        width: 1,
+                      ),
+                    ),
+                    child: Text(
+                      'Block $_currentBlockNumber · ${_isCurrentBlockTreatment ? 'Treatment' : 'Control'}',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: _isCurrentBlockTreatment
+                            ? _kGreen
+                            : Colors.blue.shade700,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             if (_wsAddress != null)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -847,17 +916,6 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
                               ? _kGreen
                               : Colors.grey.shade500,
                         ),
-                        const SizedBox(width: 5),
-                        Text(
-                          _wsAddress!,
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: _wsClients.isNotEmpty
-                                ? _kGreen
-                                : Colors.grey.shade600,
-                          ),
-                        ),
                       ]),
                     ),
                   ),
@@ -882,6 +940,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
               ),
           ],
         ),
+        resizeToAvoidBottomInset: false,
         body: SafeArea(
           child: Column(
             children: [
@@ -1185,8 +1244,11 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
       _Phase.relaxationRunning => _buildRelaxationRunning(),
       _Phase.surveyHintFinal => _buildSurveyHint(
           nextPhase: _Phase.questionnaire,
-          nextLabel: 'Weiter zum UX-Fragebogen',
-          showUxHint: true,
+          nextLabel: _isCurrentBlockTreatment
+              ? 'Weiter zum UX-Fragebogen'
+              : 'Block abschließen',
+          showUxHint: _isCurrentBlockTreatment,
+          onNext: _isCurrentBlockTreatment ? null : _onBlockComplete,
         ),
       _Phase.questionnaire => _buildQuestionnaire(),
       _Phase.done => _buildDone(),
@@ -1196,8 +1258,9 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
   // ── Phase widgets ─────────────────────────────────────────────────────────────
 
   Widget _buildParticipantIdInput() {
-    return Column(
-      children: [
+    return SingleChildScrollView(
+      child: Column(
+        children: [
         const SizedBox(height: 48),
         const Icon(Icons.person_rounded, size: 72, color: _kGreen),
         const SizedBox(height: 24),
@@ -1219,12 +1282,54 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
           autofocus: true,
         ),
         const SizedBox(height: 24),
+        // Block order selection
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            'Studienreihenfolge',
+            style: Theme.of(context)
+                .textTheme
+                .labelLarge
+                ?.copyWith(color: Colors.grey.shade700),
+          ),
+        ),
+        const SizedBox(height: 10),
+        SegmentedButton<_BlockOrder>(
+          segments: const [
+            ButtonSegment(
+              value: _BlockOrder.treatmentFirst,
+              label: Text('Treatment zuerst'),
+              icon: Icon(Icons.thermostat_rounded),
+            ),
+            ButtonSegment(
+              value: _BlockOrder.controlFirst,
+              label: Text('Control zuerst'),
+              icon: Icon(Icons.science_outlined),
+            ),
+          ],
+          selected: {_blockOrder},
+          onSelectionChanged: (s) =>
+              setState(() => _blockOrder = s.first),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          _blockOrder == _BlockOrder.treatmentFirst
+              ? 'Block 1: Treatment · Block 2: Control'
+              : 'Block 1: Control · Block 2: Treatment',
+          style: Theme.of(context)
+              .textTheme
+              .bodySmall
+              ?.copyWith(color: Colors.grey),
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 24),
         SizedBox(
           width: double.infinity,
           child: ElevatedButton.icon(
             onPressed: () async {
               final id = _participantIdController.text.trim();
               if (id.isEmpty) return;
+              _log('study_order_${_blockOrder.name}');
               await _startRecording(id);
             },
             icon: const Icon(Icons.fiber_manual_record),
@@ -1232,7 +1337,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
             style: _primaryStyle(),
           ),
         ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -1348,6 +1454,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
     required _Phase nextPhase,
     required String nextLabel,
     required bool showUxHint,
+    VoidCallback? onNext,
   }) {
     return Column(
       children: [
@@ -1368,7 +1475,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
         SizedBox(
           width: double.infinity,
           child: ElevatedButton(
-            onPressed: () => setState(() => _phase = nextPhase),
+            onPressed: onNext ?? () => setState(() => _phase = nextPhase),
             style: _primaryStyle(),
             child: Text(nextLabel),
           ),
@@ -1394,7 +1501,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
         SizedBox(
           width: double.infinity,
           child: ElevatedButton(
-            onPressed: () => setState(() => _phase = _Phase.done),
+            onPressed: _onBlockComplete,
             style: _primaryStyle(),
             child: const Text('Protokoll abschließen'),
           ),
@@ -1574,10 +1681,13 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
 
   Widget _buildRelaxationReady() => _buildReadyScreen(
         icon: Icons.spa_rounded,
-        title: 'Relaxationsphase',
-        description:
-            'MAST abgeschlossen.\nBitte Versuchsperson zur Entspannung auffordern.',
-        buttonLabel: 'Relaxation starten (15 min)',
+        title: _isCurrentBlockTreatment
+            ? 'Relaxationsphase – Treatment'
+            : 'Relaxationsphase – Control',
+        description: _isCurrentBlockTreatment
+            ? 'MAST abgeschlossen.\nBitte Versuchsperson zur Entspannung auffordern.\nCalmables wird während der Entspannung aktiv.'
+            : 'MAST abgeschlossen.\nBitte Versuchsperson zur Entspannung auffordern.\nKein Calmables-Treatment in dieser Phase.',
+        buttonLabel: 'Relaxation starten (5 min)',
         onStart: _startRelaxation,
       );
 
@@ -1585,11 +1695,37 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
     return Column(
       children: [
         const SizedBox(height: 32),
-        _phaseTitle('Relaxation'),
+        _phaseTitle(_isCurrentBlockTreatment
+            ? 'Relaxation \u2013 Treatment'
+            : 'Relaxation \u2013 Control'),
         const SizedBox(height: 16),
         _timerDisplay(_phaseRemainingSeconds),
         const SizedBox(height: 24),
-        _buildCalmablesControlPanel(showSavedValueMarker: true),
+        if (_isCurrentBlockTreatment)
+          _buildCalmablesControlPanel(showSavedValueMarker: true)
+        else
+          Opacity(
+            opacity: 0.38,
+            child: IgnorePointer(
+              child: _buildCalmablesControlPanel(showSavedValueMarker: false),
+            ),
+          ),
+        if (!_isCurrentBlockTreatment) ...[
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.info_outline_rounded,
+                  size: 14, color: Colors.grey.shade500),
+              const SizedBox(width: 6),
+              Text(
+                'Control-Phase: Calmables deaktiviert',
+                style: TextStyle(
+                    fontSize: 12, color: Colors.grey.shade500),
+              ),
+            ],
+          ),
+        ],
       ],
     );
   }
