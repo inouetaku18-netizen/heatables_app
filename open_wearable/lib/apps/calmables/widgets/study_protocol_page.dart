@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -68,7 +70,8 @@ class StudyProtocolPage extends StatefulWidget {
   State<StudyProtocolPage> createState() => _StudyProtocolPageState();
 }
 
-class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProviderStateMixin {
+class _StudyProtocolPageState extends State<StudyProtocolPage>
+    with TickerProviderStateMixin {
   _Phase _phase = _Phase.participantIdInput;
   final _participantIdController = TextEditingController();
 
@@ -77,11 +80,11 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
   int _phaseRemainingSeconds = 0;
 
   // MA state
-  int _maStartNumber = 0;   // fixed x for the current MA block
+  int _maStartNumber = 0; // fixed x for the current MA block
   int _maCurrentNumber = 0;
   int _maExpectedAnswer = 0;
   Timer? _maJudgementTimer;
-  AnimationController? _judgementAnim;  // drives smooth ring 1.0→0.0 over 5s
+  AnimationController? _judgementAnim; // drives smooth ring 1.0→0.0 over 5s
   int _maCorrectCount = 0;
   int _maWrongCount = 0;
   final _random = Random();
@@ -93,8 +96,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
   int _showCharts = 0;
 
   // Calmables state
-  int _calmablesPowerValue = 0;  // saved from power-adjust step
-  int _relaxationCurrentPwm = 0;  // live value during relaxation
+  int _calmablesPowerValue = 0; // saved from power-adjust step
+  int _relaxationCurrentPwm = 0; // live value during relaxation
   bool _calmablesOn = false;
 
   // Transition screen state (non-MA fields)
@@ -103,17 +106,178 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
   IconData _transitionIcon = Icons.play_arrow_rounded;
   VoidCallback? _transitionCallback;
   VoidCallback? _transitionBackCallback;
-  VoidCallback? _transitionSkipCallback; // for MA transitions: jumps past the MA
+  VoidCallback?
+      _transitionSkipCallback; // for MA transitions: jumps past the MA
+
+  // Dashboard WebSocket server
+  HttpServer? _wsServer;
+  final List<WebSocket> _wsClients = [];
+  String? _wsAddress; // e.g. "192.168.1.42:8080"
 
   static const _kGreen = Color(0xFF009682);
 
   @override
+  void initState() {
+    super.initState();
+    _startDashboardServer();
+  }
+
+  @override
   void dispose() {
+    _wsServer?.close(force: true);
+    for (final ws in _wsClients) {
+      ws.close();
+    }
     _phaseTimer?.cancel();
     _maJudgementTimer?.cancel();
     _judgementAnim?.dispose();
     _participantIdController.dispose();
     super.dispose();
+  }
+
+  // ── Dashboard WebSocket server ────────────────────────────────────────────────
+
+  Future<void> _startDashboardServer() async {
+    try {
+      _wsServer =
+          await HttpServer.bind(InternetAddress.anyIPv4, 8080, shared: true);
+      // Find local non-loopback IPv4 address
+      final interfaces =
+          await NetworkInterface.list(type: InternetAddressType.IPv4);
+      for (final iface in interfaces) {
+        for (final addr in iface.addresses) {
+          if (!addr.isLoopback) {
+            if (mounted) setState(() => _wsAddress = '${addr.address}:8080');
+            break;
+          }
+        }
+        if (_wsAddress != null) break;
+      }
+      _wsServer!.listen((HttpRequest req) async {
+        if (WebSocketTransformer.isUpgradeRequest(req)) {
+          req.response.headers.add('Access-Control-Allow-Origin', '*');
+          final ws = await WebSocketTransformer.upgrade(req);
+          _wsClients.add(ws);
+          _sendDashboardState(ws);
+          ws.listen(
+            (dynamic event) => _handleDashboardMessage(ws, event),
+            onDone: () => _wsClients.remove(ws),
+            onError: (_) => _wsClients.remove(ws),
+          );
+        } else {
+          req.response
+            ..statusCode = 200
+            ..headers.add('Access-Control-Allow-Origin', '*')
+            ..close();
+        }
+      });
+    } catch (_) {
+      // Server couldn't start (e.g. port in use)
+    }
+  }
+
+  int get _dashboardAmountCents =>
+      (4000 - _maWrongCount * 20).clamp(2000, 4000);
+
+  int get _dashboardDeductionCents => 4000 - _dashboardAmountCents;
+
+  int get _dashboardErrorCount => _dashboardDeductionCents ~/ 20;
+
+  bool get _dashboardTimerRunning =>
+      _phase == _Phase.ma1Running ||
+      _phase == _Phase.ma2Running ||
+      _phase == _Phase.ma3Running;
+
+  void _sendDashboardState(WebSocket ws) {
+    try {
+      ws.add(
+        jsonEncode(<String, dynamic>{
+          'type': 'state',
+          'amountCents': _dashboardAmountCents,
+          'errorCount': _dashboardErrorCount,
+          'deductionCents': _dashboardDeductionCents,
+          'isRunning': _dashboardTimerRunning,
+        }),
+      );
+    } catch (_) {
+      _wsClients.remove(ws);
+    }
+  }
+
+  void _broadcastWs(Map<String, dynamic> data) {
+    if (_wsClients.isEmpty) return;
+    final msg = jsonEncode(data);
+    for (final ws in List.of(_wsClients)) {
+      try {
+        ws.add(msg);
+      } catch (_) {
+        _wsClients.remove(ws);
+      }
+    }
+  }
+
+  void _broadcastDashboardState() {
+    _broadcastWs(<String, dynamic>{
+      'type': 'state',
+      'amountCents': _dashboardAmountCents,
+      'errorCount': _dashboardErrorCount,
+      'deductionCents': _dashboardDeductionCents,
+      'isRunning': _dashboardTimerRunning,
+    });
+  }
+
+  void _handleDashboardMessage(WebSocket ws, dynamic event) {
+    if (event is! String) return;
+
+    try {
+      final decoded = jsonDecode(event);
+      if (decoded is! Map<String, dynamic>) return;
+      final type = decoded['type'];
+      if (type is! String) return;
+
+      switch (type) {
+        case 'state_request':
+          _sendDashboardState(ws);
+          break;
+        case 'error':
+          if (_dashboardTimerRunning) {
+            _onMaWrong();
+          } else {
+            if (_dashboardAmountCents > 2000) {
+              setState(() {
+                _maWrongCount++;
+              });
+            }
+            _broadcastDashboardState();
+          }
+          break;
+        case 'undo':
+          if (_maWrongCount > 0) {
+            setState(() {
+              _maWrongCount--;
+            });
+          }
+          _broadcastDashboardState();
+          break;
+        case 'reset':
+          setState(() {
+            _maWrongCount = 0;
+          });
+          _broadcastDashboardState();
+          break;
+        case 'correct':
+          if (_dashboardTimerRunning) {
+            _onMaCorrect();
+          } else {
+            _broadcastDashboardState();
+          }
+          break;
+        default:
+          break;
+      }
+    } catch (_) {
+      // Ignore malformed dashboard commands to keep the protocol running.
+    }
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -151,7 +315,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
       vsync: this,
       duration: const Duration(seconds: 5),
       value: 1.0,
-    )..addStatusListener((status) {
+    )
+      ..addStatusListener((status) {
         if (status == AnimationStatus.dismissed && mounted) {
           _onMaTimeout();
         }
@@ -232,16 +397,22 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
     setState(() {
       _phase = phase;
     });
+    _broadcastWs({'type': 'ma_start', 'number': number});
+    _broadcastDashboardState();
     _startJudgementCountdown();
     _startPhaseTimer(durationSeconds, () {
       _maJudgementTimer?.cancel();
       _judgementAnim?.stop();
       _log('ma_${number}_end');
+      _broadcastWs({'type': 'ma_stop'});
+      _broadcastDashboardState();
       onDone();
     });
   }
 
-  void _awaitTransition(String title, String buttonLabel, IconData icon, VoidCallback callback, {VoidCallback? backCallback, VoidCallback? skipCallback}) {
+  void _awaitTransition(
+      String title, String buttonLabel, IconData icon, VoidCallback callback,
+      {VoidCallback? backCallback, VoidCallback? skipCallback}) {
     setState(() {
       _phase = _Phase.pendingTransition;
       _transitionTitle = title;
@@ -256,38 +427,69 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
   void _readyMa1() {
     _maStartNumber = _randomMaStart();
     _transitionIsMa = true;
-    _awaitTransition('Kopfrechnen 1', 'Kopfrechnen starten', Icons.calculate_rounded, _startMa1,
-        backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _judgementAnim?.stop(); _beginHit(1, 90, _readyMa1); },
-        skipCallback: _readyHit2);
+    _awaitTransition('Kopfrechnen 1', 'Kopfrechnen starten',
+        Icons.calculate_rounded, _startMa1, backCallback: () {
+      _phaseTimer?.cancel();
+      _maJudgementTimer?.cancel();
+      _judgementAnim?.stop();
+      _beginHit(1, 90, _readyMa1);
+    }, skipCallback: _readyHit2);
   }
+
   void _startMa1() => _beginMa(1, 45, _readyHit2);
   void _readyHit2() {
     _transitionIsMa = false;
-    _awaitTransition('Hand Immersion 2', 'Hand Immersion starten', Icons.water_rounded, _doHit2,
-        backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _judgementAnim?.stop(); _beginMa(1, 45, _readyHit2); });
+    _awaitTransition('Hand Immersion 2', 'Hand Immersion starten',
+        Icons.water_rounded, _doHit2, backCallback: () {
+      _phaseTimer?.cancel();
+      _maJudgementTimer?.cancel();
+      _judgementAnim?.stop();
+      _beginMa(1, 45, _readyHit2);
+    });
   }
+
   void _doHit2() => _beginHit(2, 60, _readyMa2);
   void _readyMa2() {
     _maStartNumber = _randomMaStart();
     _transitionIsMa = true;
-    _awaitTransition('Kopfrechnen 2', 'Kopfrechnen starten', Icons.calculate_rounded, _startMa2,
-        backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _judgementAnim?.stop(); _beginHit(2, 60, _readyMa2); },
-        skipCallback: _readyHit3);
+    _awaitTransition('Kopfrechnen 2', 'Kopfrechnen starten',
+        Icons.calculate_rounded, _startMa2, backCallback: () {
+      _phaseTimer?.cancel();
+      _maJudgementTimer?.cancel();
+      _judgementAnim?.stop();
+      _beginHit(2, 60, _readyMa2);
+    }, skipCallback: _readyHit3);
   }
+
   void _startMa2() => _beginMa(2, 60, _readyHit3);
   void _readyHit3() {
     _transitionIsMa = false;
-    _awaitTransition('Hand Immersion 3', 'Hand Immersion starten', Icons.water_rounded, _doHit3,
-        backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _judgementAnim?.stop(); _beginMa(2, 60, _readyHit3); });
+    _awaitTransition('Hand Immersion 3', 'Hand Immersion starten',
+        Icons.water_rounded, _doHit3, backCallback: () {
+      _phaseTimer?.cancel();
+      _maJudgementTimer?.cancel();
+      _judgementAnim?.stop();
+      _beginMa(2, 60, _readyHit3);
+    });
   }
+
   void _doHit3() => _beginHit(3, 60, _readyMa3);
   void _readyMa3() {
     _maStartNumber = _randomMaStart();
     _transitionIsMa = true;
-    _awaitTransition('Kopfrechnen 3', 'Kopfrechnen starten', Icons.calculate_rounded, _startMa3,
-        backCallback: () { _phaseTimer?.cancel(); _maJudgementTimer?.cancel(); _judgementAnim?.stop(); _beginHit(3, 60, _readyMa3); },
-        skipCallback: () { _log('ma_3_skip'); _log('mast_end'); setState(() => _phase = _Phase.surveyHintPostMast); });
+    _awaitTransition('Kopfrechnen 3', 'Kopfrechnen starten',
+        Icons.calculate_rounded, _startMa3, backCallback: () {
+      _phaseTimer?.cancel();
+      _maJudgementTimer?.cancel();
+      _judgementAnim?.stop();
+      _beginHit(3, 60, _readyMa3);
+    }, skipCallback: () {
+      _log('ma_3_skip');
+      _log('mast_end');
+      setState(() => _phase = _Phase.surveyHintPostMast);
+    });
   }
+
   void _startMa3() => _beginMa(3, 90, () {
         _log('mast_end');
         if (mounted) setState(() => _phase = _Phase.surveyHintPostMast);
@@ -300,6 +502,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
     _maCurrentNumber = _maExpectedAnswer;
     _log('ma_correct_${_maExpectedAnswer}');
     _maExpectedAnswer = _maCurrentNumber - 17;
+    _broadcastWs({'type': 'correct'});
+    _broadcastDashboardState();
     setState(() {});
     _startJudgementCountdown();
   }
@@ -311,6 +515,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
     _maCurrentNumber = _maStartNumber;
     _maExpectedAnswer = _maStartNumber; // restart: VP says start number again
     _log('ma_wrong_restart_from_x_$_maStartNumber');
+    _broadcastWs({'type': 'error'});
+    _broadcastDashboardState();
     setState(() {});
     _startJudgementCountdown();
   }
@@ -320,6 +526,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
     _maCurrentNumber = _maStartNumber;
     _maExpectedAnswer = _maStartNumber; // restart: VP says start number again
     _log('ma_timeout_restart_from_x_$_maStartNumber');
+    _broadcastWs({'type': 'timeout'});
+    _broadcastDashboardState();
     setState(() {});
     _startJudgementCountdown();
   }
@@ -383,17 +591,26 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
           _transitionCallback?.call();
         }
       case _Phase.hit1Running:
-        _log('hit_1_end'); _readyMa1();
+        _log('hit_1_end');
+        _readyMa1();
       case _Phase.ma1Running:
-        _maJudgementTimer?.cancel(); _log('ma_1_end'); _readyHit2();
+        _maJudgementTimer?.cancel();
+        _log('ma_1_end');
+        _readyHit2();
       case _Phase.hit2Running:
-        _log('hit_2_end'); _readyMa2();
+        _log('hit_2_end');
+        _readyMa2();
       case _Phase.ma2Running:
-        _maJudgementTimer?.cancel(); _log('ma_2_end'); _readyHit3();
+        _maJudgementTimer?.cancel();
+        _log('ma_2_end');
+        _readyHit3();
       case _Phase.hit3Running:
-        _log('hit_3_end'); _readyMa3();
+        _log('hit_3_end');
+        _readyMa3();
       case _Phase.ma3Running:
-        _maJudgementTimer?.cancel(); _log('ma_3_end'); _log('mast_end');
+        _maJudgementTimer?.cancel();
+        _log('ma_3_end');
+        _log('mast_end');
         setState(() => _phase = _Phase.surveyHintPostMast);
       case _Phase.relaxationReady:
         _log('relaxation_skip');
@@ -419,13 +636,23 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
         setState(() => _phase = _Phase.syncDevices);
       case _Phase.akklimatisation:
         _phaseTimer?.cancel();
-        setState(() { _phase = _Phase.calmablesPowerAdjust; _phaseRemainingSeconds = 0; });
+        setState(() {
+          _phase = _Phase.calmablesPowerAdjust;
+          _phaseRemainingSeconds = 0;
+        });
       case _Phase.akklimatisationRunning:
         _phaseTimer?.cancel();
-        setState(() { _phase = _Phase.akklimatisation; _phaseRemainingSeconds = 0; });
+        setState(() {
+          _phase = _Phase.akklimatisation;
+          _phaseRemainingSeconds = 0;
+        });
       case _Phase.baselineReady:
         setState(() => _phase = _Phase.akklimatisation);
-      case _Phase.baselineRunning:        setState(() { _phase = _Phase.baselineReady; _phaseRemainingSeconds = 0; });
+      case _Phase.baselineRunning:
+        setState(() {
+          _phase = _Phase.baselineReady;
+          _phaseRemainingSeconds = 0;
+        });
       case _Phase.surveyHintPreMast:
         setState(() => _phase = _Phase.baselineReady);
       case _Phase.mastPrepare:
@@ -433,7 +660,10 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
       case _Phase.surveyHintPostMast:
         setState(() => _phase = _Phase.mastPrepare);
       case _Phase.surveyHintFinal:
-        setState(() { _phase = _Phase.relaxationReady; _phaseRemainingSeconds = 0; });
+        setState(() {
+          _phase = _Phase.relaxationReady;
+          _phaseRemainingSeconds = 0;
+        });
       case _Phase.questionnaire:
         setState(() => _phase = _Phase.surveyHintFinal);
       case _Phase.pendingTransition:
@@ -453,7 +683,10 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
       case _Phase.relaxationReady:
         setState(() => _phase = _Phase.surveyHintPostMast);
       case _Phase.relaxationRunning:
-        setState(() { _phase = _Phase.relaxationReady; _phaseRemainingSeconds = 0; });
+        setState(() {
+          _phase = _Phase.relaxationReady;
+          _phaseRemainingSeconds = 0;
+        });
       default:
         break;
     }
@@ -574,6 +807,61 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
             onPressed: _onBackPressed,
           ),
           actions: [
+            if (_wsAddress != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Center(
+                  child: GestureDetector(
+                    onTap: () {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                            content: Text('WS: ws://$_wsAddress'),
+                            duration: const Duration(seconds: 3)),
+                      );
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: _wsClients.isNotEmpty
+                            ? _kGreen.withValues(alpha: 0.15)
+                            : Theme.of(context)
+                                .colorScheme
+                                .surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: _wsClients.isNotEmpty
+                              ? _kGreen
+                              : Colors.grey.shade400,
+                          width: 1,
+                        ),
+                      ),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(
+                          _wsClients.isNotEmpty
+                              ? Icons.wifi_rounded
+                              : Icons.wifi_off_rounded,
+                          size: 14,
+                          color: _wsClients.isNotEmpty
+                              ? _kGreen
+                              : Colors.grey.shade500,
+                        ),
+                        const SizedBox(width: 5),
+                        Text(
+                          _wsAddress!,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: _wsClients.isNotEmpty
+                                ? _kGreen
+                                : Colors.grey.shade600,
+                          ),
+                        ),
+                      ]),
+                    ),
+                  ),
+                ),
+              ),
             IconButton(
               icon: Icon(
                 _showCharts == 0
@@ -603,7 +891,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     _buildBody(),
-                    if (_phaseIsSkippable || _canGoBack) ...[                        const SizedBox(height: 24),
+                    if (_phaseIsSkippable || _canGoBack) ...[
+                      const SizedBox(height: 24),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
@@ -640,12 +929,12 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
                 ),
               ),
               // Level 1: cards at bottom
-              if (_showCharts == 1 && _chartsAvailable) ...[  
+              if (_showCharts == 1 && _chartsAvailable) ...[
                 const Spacer(),
                 _buildMetricCardsRow(),
               ],
               // Level 2: cards fixed + plots scrollable
-              if (_showCharts >= 2 && _chartsAvailable) ...[  
+              if (_showCharts >= 2 && _chartsAvailable) ...[
                 _buildMetricCardsRow(),
                 Expanded(
                   child: SingleChildScrollView(
@@ -666,69 +955,109 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
       child: Row(
         children: [
-              if (widget.heartRateStream != null)
-                Expanded(
-                  child: StreamBuilder<double?>(
-                    stream: widget.heartRateStream,
-                    builder: (ctx, snap) {
-                      final bpm = snap.data;
-                      return _ChartMetricCard(
-                        icon: Icons.favorite_rounded,
-                        title: 'Heart Rate',
-                        value: bpm != null && bpm.isFinite ? bpm.toStringAsFixed(0) : '--',
-                        unit: 'BPM',
-                        iconColor: _kGreen,
-                      );
-                    },
-                  ),
-                ),
-          if (widget.heartRateStream != null && widget.signalQualityStream != null)
+          if (widget.heartRateStream != null)
+            Expanded(
+              child: StreamBuilder<double?>(
+                stream: widget.heartRateStream,
+                builder: (ctx, snap) {
+                  final bpm = snap.data;
+                  return _ChartMetricCard(
+                    icon: Icons.favorite_rounded,
+                    title: 'Heart Rate',
+                    value: bpm != null && bpm.isFinite
+                        ? bpm.toStringAsFixed(0)
+                        : '--',
+                    unit: 'BPM',
+                    iconColor: _kGreen,
+                  );
+                },
+              ),
+            ),
+          if (widget.heartRateStream != null &&
+              widget.signalQualityStream != null)
             const SizedBox(width: 12),
           if (widget.signalQualityStream != null)
             Expanded(
               child: StreamBuilder<PpgSignalQuality>(
-                  stream: widget.signalQualityStream,
-                  initialData: PpgSignalQuality.unavailable,
-                  builder: (ctx, snap) {
-                    final q = snap.data ?? PpgSignalQuality.unavailable;
-                    final cs = Theme.of(ctx).colorScheme;
-                    final (label, hint, icon, color) = switch (q) {
-                      PpgSignalQuality.good => ('Good', 'Signal quality is good.', Icons.check_circle_rounded, const Color(0xFF8CB63C)),
-                      PpgSignalQuality.fair => ('Fair', 'Heartbeat is visible.', Icons.network_check_rounded, Colors.orange.shade700),
-                      PpgSignalQuality.bad => ('Bad', 'Signal is noisy.', Icons.signal_cellular_connected_no_internet_4_bar_rounded, cs.error),
-                      PpgSignalQuality.unavailable => ('Unavailable', 'No stable heartbeat.', Icons.portable_wifi_off_rounded, cs.onSurfaceVariant),
-                    };
-                    return Card(
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                              Row(children: [
-                                Icon(icon, size: 16, color: color),
-                                const SizedBox(width: 6),
-                                Text('PPG', style: Theme.of(ctx).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
-                              ]),
-                              Container(
-                                decoration: BoxDecoration(
-                                  color: color.withValues(alpha: 0.14),
-                                  borderRadius: BorderRadius.circular(999),
-                                ),
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                child: Text(label,
-                                    style: Theme.of(ctx).textTheme.labelMedium?.copyWith(color: color, fontWeight: FontWeight.w700)),
-                              ),
-                            ]),
-                            const SizedBox(height: 6),
-                            Text(hint,
-                                style: Theme.of(ctx).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
-                          ],
-                        ),
+                stream: widget.signalQualityStream,
+                initialData: PpgSignalQuality.unavailable,
+                builder: (ctx, snap) {
+                  final q = snap.data ?? PpgSignalQuality.unavailable;
+                  final cs = Theme.of(ctx).colorScheme;
+                  final (label, hint, icon, color) = switch (q) {
+                    PpgSignalQuality.good => (
+                        'Good',
+                        'Signal quality is good.',
+                        Icons.check_circle_rounded,
+                        const Color(0xFF8CB63C)
                       ),
-                    );
-                  },
-                ),
+                    PpgSignalQuality.fair => (
+                        'Fair',
+                        'Heartbeat is visible.',
+                        Icons.network_check_rounded,
+                        Colors.orange.shade700
+                      ),
+                    PpgSignalQuality.bad => (
+                        'Bad',
+                        'Signal is noisy.',
+                        Icons
+                            .signal_cellular_connected_no_internet_4_bar_rounded,
+                        cs.error
+                      ),
+                    PpgSignalQuality.unavailable => (
+                        'Unavailable',
+                        'No stable heartbeat.',
+                        Icons.portable_wifi_off_rounded,
+                        cs.onSurfaceVariant
+                      ),
+                  };
+                  return Card(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Row(children: [
+                                  Icon(icon, size: 16, color: color),
+                                  const SizedBox(width: 6),
+                                  Text('PPG',
+                                      style: Theme.of(ctx)
+                                          .textTheme
+                                          .titleSmall
+                                          ?.copyWith(
+                                              fontWeight: FontWeight.w700)),
+                                ]),
+                                Container(
+                                  decoration: BoxDecoration(
+                                    color: color.withValues(alpha: 0.14),
+                                    borderRadius: BorderRadius.circular(999),
+                                  ),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 3),
+                                  child: Text(label,
+                                      style: Theme.of(ctx)
+                                          .textTheme
+                                          .labelMedium
+                                          ?.copyWith(
+                                              color: color,
+                                              fontWeight: FontWeight.w700)),
+                                ),
+                              ]),
+                          const SizedBox(height: 6),
+                          Text(hint,
+                              style: Theme.of(ctx)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(color: cs.onSurfaceVariant)),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
             ),
         ],
       ),
@@ -743,7 +1072,9 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // HR chart card
-          if (_showCharts >= 2 && widget.rawHrStream != null && widget.smoothedHrStream != null) ...[
+          if (_showCharts >= 2 &&
+              widget.rawHrStream != null &&
+              widget.smoothedHrStream != null) ...[
             const SizedBox(height: 10),
             Card(
               child: Padding(
@@ -752,13 +1083,21 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Row(children: [
-                      const Icon(Icons.favorite_rounded, size: 16, color: _kGreen),
+                      const Icon(Icons.favorite_rounded,
+                          size: 16, color: _kGreen),
                       const SizedBox(width: 6),
-                      Text('Heart Rate (60s)', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+                      Text('Heart Rate (60s)',
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleSmall
+                              ?.copyWith(fontWeight: FontWeight.w700)),
                     ]),
                     const SizedBox(height: 4),
                     Text('Grau: RR-Intervall HR · Rot: Kalman-gefiltert',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _kGreen)),
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodySmall
+                            ?.copyWith(color: _kGreen)),
                     const SizedBox(height: 8),
                     SizedBox(
                       height: 120,
@@ -784,9 +1123,14 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Row(children: [
-                      const Icon(Icons.show_chart_rounded, size: 16, color: _kGreen),
+                      const Icon(Icons.show_chart_rounded,
+                          size: 16, color: _kGreen),
                       const SizedBox(width: 6),
-                      Text('PPG', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+                      Text('PPG',
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleSmall
+                              ?.copyWith(fontWeight: FontWeight.w700)),
                     ]),
                     const SizedBox(height: 8),
                     SizedBox(
@@ -902,21 +1246,27 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
           const SizedBox(height: 16),
           Text(
             'Startzahl',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: Colors.grey),
           ),
           const SizedBox(height: 4),
           Text(
             '$_maStartNumber',
             style: Theme.of(context).textTheme.displayMedium?.copyWith(
-              fontWeight: FontWeight.bold,
-              color: _kGreen,
-              letterSpacing: 4,
-            ),
+                  fontWeight: FontWeight.bold,
+                  color: _kGreen,
+                  letterSpacing: 4,
+                ),
           ),
           const SizedBox(height: 4),
           Text(
             'VP nennt diese Zahl, dann fortlaufend −17',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: Colors.grey),
             textAlign: TextAlign.center,
           ),
         ] else
@@ -938,7 +1288,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
   Widget _buildAkklimatisation() => _buildReadyScreen(
         icon: Icons.air_rounded,
         title: 'Akklimatisation',
-        description: 'Versuchsperson 15 Minuten akklimatisieren lassen. Bitte sicherstellen, dass die Person ruhig sitzt und entspannt ist.',
+        description:
+            'Versuchsperson 15 Minuten akklimatisieren lassen. Bitte sicherstellen, dass die Person ruhig sitzt und entspannt ist.',
         buttonLabel: 'Akklimatisation starten',
         onStart: _startAkklimatisation,
       );
@@ -963,7 +1314,10 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
         OutlinedButton.icon(
           onPressed: () {
             _phaseTimer?.cancel();
-            setState(() { _phase = _Phase.akklimatisation; _phaseRemainingSeconds = 0; });
+            setState(() {
+              _phase = _Phase.akklimatisation;
+              _phaseRemainingSeconds = 0;
+            });
           },
           icon: const Icon(Icons.refresh),
           label: const Text('Akklimatisation neu starten'),
@@ -997,7 +1351,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
     return Column(
       children: [
         const SizedBox(height: 48),
-        const Icon(Icons.assignment_turned_in_rounded, size: 72, color: _kGreen),
+        const Icon(Icons.assignment_turned_in_rounded,
+            size: 72, color: _kGreen),
         const SizedBox(height: 24),
         _phaseTitle('Survey ausfüllen'),
         const SizedBox(height: 16),
@@ -1126,8 +1481,13 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
         const Divider(height: 32),
         // Question label
         Text(
-          isFirstQuestion ? 'VP nennt die Startzahl' : '$_maCurrentNumber − 17 = ?',
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey),
+          isFirstQuestion
+              ? 'VP nennt die Startzahl'
+              : '$_maCurrentNumber − 17 = ?',
+          style: Theme.of(context)
+              .textTheme
+              .bodyMedium
+              ?.copyWith(color: Colors.grey),
         ),
         const SizedBox(height: 4),
         Text(
@@ -1138,9 +1498,9 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
         Text(
           '$_maExpectedAnswer',
           style: Theme.of(context).textTheme.displayLarge?.copyWith(
-            fontWeight: FontWeight.bold,
-            color: isFirstQuestion ? _kGreen : Colors.orange.shade700,
-          ),
+                fontWeight: FontWeight.bold,
+                color: isFirstQuestion ? _kGreen : Colors.orange.shade700,
+              ),
         ),
         const SizedBox(height: 8),
         // Smooth judgement countdown ring
@@ -1167,8 +1527,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
                     Text(
                       '$secondsLeft',
                       style: Theme.of(ctx).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
+                            fontWeight: FontWeight.bold,
+                          ),
                     ),
                   ],
                 ),
@@ -1184,29 +1544,29 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
               child: ElevatedButton.icon(
                 onPressed: _onMaCorrect,
                 icon: const Icon(Icons.check_rounded, size: 24),
-                  label: const Text('Richtig', style: TextStyle(fontSize: 16)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green.shade600,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
+                label: const Text('Richtig', style: TextStyle(fontSize: 16)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green.shade600,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
                 ),
               ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: _onMaWrong,
-                  icon: const Icon(Icons.close_rounded, size: 24),
-                  label: const Text('Falsch', style: TextStyle(fontSize: 16)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red.shade600,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _onMaWrong,
+                icon: const Icon(Icons.close_rounded, size: 24),
+                label: const Text('Falsch', style: TextStyle(fontSize: 16)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red.shade600,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
+        ),
       ],
     );
   }
@@ -1288,7 +1648,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
         SizedBox(
           width: double.infinity,
           child: ElevatedButton.icon(
-            onPressed: () => setState(() => _phase = _Phase.calmablesPowerAdjust),
+            onPressed: () =>
+                setState(() => _phase = _Phase.calmablesPowerAdjust),
             icon: const Icon(Icons.check_rounded),
             label: const Text('Geräte synchronisiert – Weiter'),
             style: _primaryStyle(),
@@ -1360,7 +1721,10 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
                 const SizedBox(width: 6),
                 Text(
                   'Calmables Control',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontWeight: FontWeight.bold),
                 ),
                 const Spacer(),
                 // On/Off toggle
@@ -1395,13 +1759,15 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
             // Slider
             Row(
               children: [
-                const Text('0', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                const Text('0',
+                    style: TextStyle(color: Colors.grey, fontSize: 12)),
                 Expanded(
                   child: LayoutBuilder(
                     builder: (ctx, constraints) {
                       const sliderPad = 24.0;
                       final trackWidth = constraints.maxWidth - 2 * sliderPad;
-                      final markerX = sliderPad + (_calmablesPowerValue / 255.0) * trackWidth;
+                      final markerX = sliderPad +
+                          (_calmablesPowerValue / 255.0) * trackWidth;
                       final alignment = 2 * markerX / constraints.maxWidth - 1;
                       return Stack(
                         children: [
@@ -1429,7 +1795,9 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
                             onChanged: (v) {
                               setState(() {
                                 _relaxationCurrentPwm = v.round();
-                                if (_calmablesOn) widget.onSendToCalmables!([_relaxationCurrentPwm]);
+                                if (_calmablesOn)
+                                  widget.onSendToCalmables!(
+                                      [_relaxationCurrentPwm]);
                               });
                             },
                           ),
@@ -1438,7 +1806,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
                     },
                   ),
                 ),
-                const Text('255', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                const Text('255',
+                    style: TextStyle(color: Colors.grey, fontSize: 12)),
               ],
             ),
             const SizedBox(height: 4),
@@ -1492,16 +1861,16 @@ class _StudyProtocolPageState extends State<StudyProtocolPage> with TickerProvid
         title,
         textAlign: TextAlign.center,
         style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-          fontWeight: FontWeight.bold,
-        ),
+              fontWeight: FontWeight.bold,
+            ),
       );
 
   Widget _timerDisplay(int seconds) => Text(
         _fmt(seconds),
         style: Theme.of(context).textTheme.displayLarge?.copyWith(
-          fontWeight: FontWeight.w300,
-          letterSpacing: 4,
-        ),
+              fontWeight: FontWeight.w300,
+              letterSpacing: 4,
+            ),
       );
 
   ButtonStyle _primaryStyle() => ElevatedButton.styleFrom(
@@ -1537,17 +1906,26 @@ class _ChartMetricCard extends StatelessWidget {
             Row(children: [
               Icon(icon, size: 16, color: iconColor),
               const SizedBox(width: 6),
-              Text(title, style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700)),
+              Text(title,
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleSmall
+                      ?.copyWith(fontWeight: FontWeight.w700)),
             ]),
             const SizedBox(height: 6),
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                Text(value, style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700)),
+                Text(value,
+                    style: Theme.of(context)
+                        .textTheme
+                        .headlineSmall
+                        ?.copyWith(fontWeight: FontWeight.w700)),
                 const SizedBox(width: 4),
                 Padding(
                   padding: const EdgeInsets.only(bottom: 3),
-                  child: Text(unit, style: Theme.of(context).textTheme.labelLarge),
+                  child:
+                      Text(unit, style: Theme.of(context).textTheme.labelLarge),
                 ),
               ],
             ),

@@ -1,0 +1,1098 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MAST Mental Arithmetic Task</title>
+    <style>
+      :root {
+        --bg: #eef2f4;
+        --card: #ffffff;
+        --panel: #f7f9fa;
+        --text: #13313c;
+        --muted: #5d7680;
+        --border: #d7e0e4;
+        --accent: #2c6e83;
+        --accent-soft: rgba(44, 110, 131, 0.14);
+        --success: #2f7d67;
+        --warning: #b5773d;
+        --danger: #b44848;
+        --shadow: 0 22px 44px rgba(19, 49, 60, 0.09);
+        --radius: 28px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        background:
+          radial-gradient(circle at top, rgba(44, 110, 131, 0.08), transparent 32%),
+          linear-gradient(180deg, #f3f6f8 0%, var(--bg) 100%);
+        color: var(--text);
+        overflow: hidden;
+      }
+
+      button,
+      input,
+      textarea,
+      select {
+        font: inherit;
+      }
+
+      button:focus-visible,
+      input:focus-visible,
+      textarea:focus-visible,
+      select:focus-visible {
+        outline: 3px solid rgba(44, 110, 131, 0.35);
+        outline-offset: 3px;
+      }
+
+      .app-shell {
+        min-height: 100%;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+
+      .layout {
+        width: min(1180px, 100%);
+        display: grid;
+        gap: 24px;
+      }
+
+      .fullscreen-toggle {
+        position: fixed;
+        right: 18px;
+        bottom: 18px;
+        width: 52px;
+        height: 52px;
+        display: inline-grid;
+        place-items: center;
+        border: 1px solid rgba(215, 224, 228, 0.95);
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.94);
+        color: var(--text);
+        box-shadow: 0 18px 34px rgba(19, 49, 60, 0.14);
+        cursor: pointer;
+        z-index: 20;
+        transition:
+          transform 120ms ease,
+          background-color 120ms ease,
+          box-shadow 120ms ease;
+      }
+
+      .fullscreen-toggle:hover {
+        transform: translateY(-1px);
+        background: #ffffff;
+      }
+
+      .fullscreen-toggle:active {
+        transform: translateY(0);
+      }
+
+      .fullscreen-toggle svg {
+        width: 22px;
+        height: 22px;
+      }
+
+      .main-card,
+      .control-card {
+        background: var(--card);
+        border: 1px solid rgba(215, 224, 228, 0.95);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+      }
+
+      .main-card {
+        position: relative;
+        overflow: hidden;
+        padding: clamp(28px, 5vw, 52px);
+      }
+
+      .main-card::after {
+        content: "";
+        position: absolute;
+        inset: auto -10% -42% auto;
+        width: 340px;
+        height: 340px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(44, 110, 131, 0.09), transparent 68%);
+        pointer-events: none;
+      }
+
+      .display-grid {
+        min-height: min(66vh, 760px);
+        display: grid;
+        align-content: center;
+        justify-items: center;
+        gap: clamp(24px, 4vw, 40px);
+        text-align: center;
+      }
+
+      .display-section {
+        display: grid;
+        gap: 10px;
+      }
+
+      .label {
+        font-size: clamp(0.95rem, 1vw + 0.7rem, 1.25rem);
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .amount {
+        margin: 0;
+        font-size: clamp(5.5rem, 12vw, 8.75rem);
+        line-height: 0.92;
+        font-weight: 800;
+        letter-spacing: -0.05em;
+        color: var(--text);
+        transition: transform 180ms ease, color 180ms ease;
+      }
+
+      .amount.pulse {
+        animation: amountPulse 480ms ease;
+      }
+
+      .amount.deduction-pulse {
+        color: var(--danger);
+      }
+
+      @keyframes amountPulse {
+        0% {
+          transform: scale(1);
+        }
+        35% {
+          transform: scale(1.04);
+        }
+        100% {
+          transform: scale(1);
+        }
+      }
+
+      .countdown-wrap {
+        display: grid;
+        gap: 10px;
+      }
+
+      .countdown {
+        margin: 0;
+        font-size: clamp(4.5rem, 10vw, 6.5rem);
+        line-height: 1;
+        font-weight: 750;
+        letter-spacing: -0.04em;
+        color: var(--text);
+        transition: transform 180ms ease, color 180ms ease;
+      }
+
+      .countdown.timeout-flash {
+        animation: countdownFlash 420ms ease;
+        color: var(--danger);
+      }
+
+      @keyframes countdownFlash {
+        0% {
+          transform: scale(1);
+          color: var(--text);
+        }
+        35% {
+          transform: scale(1.06);
+          color: var(--danger);
+        }
+        100% {
+          transform: scale(1);
+          color: var(--danger);
+        }
+      }
+
+      .state-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 16px;
+        border-radius: 999px;
+        background: var(--panel);
+        color: var(--text);
+        font-weight: 700;
+        justify-self: center;
+      }
+
+      .state-icon {
+        width: 18px;
+        height: 18px;
+        display: inline-grid;
+        place-items: center;
+      }
+
+      .state-icon svg {
+        width: 18px;
+        height: 18px;
+      }
+
+      .control-card {
+        padding: clamp(20px, 3vw, 28px);
+        display: grid;
+        gap: 22px;
+      }
+
+      .control-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+
+      .control-title {
+        margin: 0;
+        font-size: 1.15rem;
+      }
+
+      .control-subtitle {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+
+      .controls {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .button {
+        min-height: 64px;
+        border: 0;
+        border-radius: 18px;
+        padding: 16px 18px;
+        font-weight: 800;
+        color: var(--text);
+        background: var(--panel);
+        cursor: pointer;
+        transition:
+          transform 120ms ease,
+          background-color 120ms ease,
+          box-shadow 120ms ease,
+          opacity 120ms ease;
+      }
+
+      .button:hover:not(:disabled) {
+        transform: translateY(-1px);
+      }
+
+      .button:active:not(:disabled) {
+        transform: translateY(0);
+      }
+
+      .button.primary {
+        background: var(--accent);
+        color: #ffffff;
+        box-shadow: 0 10px 24px rgba(44, 110, 131, 0.2);
+      }
+
+      .button.secondary {
+        background: rgba(44, 110, 131, 0.1);
+        color: var(--accent);
+      }
+
+      .button.warning {
+        background: #e7f0f3;
+        color: var(--text);
+      }
+
+      .button:disabled {
+        cursor: not-allowed;
+        opacity: 0.48;
+        box-shadow: none;
+      }
+
+      .status-grid {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .status-card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 14px 16px;
+        display: grid;
+        gap: 8px;
+        min-height: 92px;
+      }
+
+      .status-label {
+        font-size: 0.82rem;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .status-value {
+        font-size: 1.2rem;
+        font-weight: 800;
+      }
+
+      .shortcut-text {
+        font-size: 0.96rem;
+        line-height: 1.45;
+      }
+
+      /* ── Phone connection row ─────────────────────────────────────── */
+      .connect-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .connect-dot {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        background: #c0c9cc;
+        transition: background 200ms ease, box-shadow 200ms ease;
+      }
+
+      .connect-dot[data-status="connected"] {
+        background: var(--success);
+        box-shadow: 0 0 0 3px rgba(47, 125, 103, 0.2);
+      }
+
+      .connect-dot[data-status="connecting"] {
+        background: var(--warning);
+        animation: connPulse 0.75s ease infinite;
+      }
+
+      .connect-dot[data-status="error"] {
+        background: var(--danger);
+      }
+
+      @keyframes connPulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.3;
+        }
+      }
+
+      .connect-input {
+        flex: 1;
+        height: 48px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 0 16px;
+        font-size: 0.97rem;
+        background: var(--panel);
+        color: var(--text);
+        transition: border-color 120ms ease;
+        min-width: 0;
+      }
+
+      .connect-input:focus {
+        border-color: var(--accent);
+        outline: none;
+        box-shadow: 0 0 0 3px rgba(44, 110, 131, 0.15);
+      }
+
+      .connect-input::placeholder {
+        color: var(--muted);
+        opacity: 0.65;
+      }
+
+      .connect-btn {
+        min-height: 48px;
+        white-space: nowrap;
+        border-radius: 14px;
+        padding: 0 20px;
+      }
+
+      .message-card {
+        padding: 16px 18px;
+        border-radius: 18px;
+        border: 1px solid var(--border);
+        background: linear-gradient(180deg, rgba(44, 110, 131, 0.08), rgba(44, 110, 131, 0.03));
+      }
+
+      .message-label {
+        font-size: 0.82rem;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+
+      .message-text {
+        font-size: 1rem;
+        font-weight: 700;
+        color: var(--text);
+      }
+
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      @media (max-width: 980px) {
+        body {
+          overflow: auto;
+        }
+
+        .display-grid {
+          min-height: auto;
+          padding-block: 12px;
+        }
+
+        .controls,
+        .status-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 580px) {
+        .app-shell {
+          padding: 14px;
+        }
+
+        .controls,
+        .status-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .button {
+          min-height: 58px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <main class="layout">
+        <section class="main-card" aria-label="Participant display">
+          <div class="display-grid">
+            <div class="state-badge" id="stateBadge" aria-live="polite">
+              <span class="state-icon" id="stateIcon" aria-hidden="true"></span>
+              <span id="stateText">Paused</span>
+            </div>
+
+            <section class="display-section" aria-labelledby="amountLabel">
+              <div class="label" id="amountLabel">Current Amount</div>
+              <p class="amount" id="amountValue">40,00 EUR</p>
+            </section>
+
+            <section class="countdown-wrap" aria-labelledby="countdownLabel">
+              <div class="label" id="countdownLabel">Next Answer In</div>
+              <p class="countdown" id="countdownValue">5</p>
+            </section>
+          </div>
+        </section>
+
+        <section class="control-card" aria-label="Experimenter controls">
+          <div class="connect-row">
+            <span class="connect-dot" id="connDot"></span>
+            <input
+              class="connect-input"
+              type="text"
+              id="wsUrlInput"
+              placeholder="ws://192.168.1.42:8080"
+              autocomplete="off"
+              spellcheck="false"
+              aria-label="WebSocket URL des Handys"
+            />
+            <button class="button secondary connect-btn" type="button" id="connectBtn">Verbinden</button>
+          </div>
+
+          <div class="control-header">
+            <div>
+              <h1 class="control-title">Experimenter Controls</h1>
+              <p class="control-subtitle">Manage timing, register errors, and monitor task status. For USB use <code>ws://127.0.0.1:8080</code> with <code>adb forward tcp:8080 tcp:8080</code>.</p>
+            </div>
+          </div>
+
+          <div class="controls">
+            <button class="button primary" id="toggleButton" type="button">Play</button>
+            <button class="button secondary" id="correctButton" type="button">Correct</button>
+            <button class="button secondary" id="errorButton" type="button">Error -0,20 EUR</button>
+            <button class="button" id="undoButton" type="button">Undo</button>
+            <button class="button warning" id="resetButton" type="button">Reset</button>
+          </div>
+
+          <div class="message-card" aria-live="polite">
+            <div class="message-label">Last Action</div>
+            <div class="message-text" id="lastActionText">Ready. Timer paused.</div>
+          </div>
+
+          <div class="status-grid">
+            <article class="status-card">
+              <div class="status-label">Current State</div>
+              <div class="status-value" id="statusState">Paused</div>
+            </article>
+
+            <article class="status-card">
+              <div class="status-label">Error Count</div>
+              <div class="status-value" id="statusErrors">0</div>
+            </article>
+
+            <article class="status-card">
+              <div class="status-label">Deduction</div>
+              <div class="status-value" id="statusDeduction">0,00 EUR</div>
+            </article>
+
+            <article class="status-card">
+              <div class="status-label">Minimum Amount</div>
+              <div class="status-value">20,00 EUR</div>
+            </article>
+
+            <article class="status-card">
+              <div class="status-label">Penalty</div>
+              <div class="status-value">0,20 EUR / error</div>
+            </article>
+
+            <article class="status-card">
+              <div class="status-label">Shortcuts</div>
+              <div class="status-value shortcut-text">
+                Space = Play/Pause<br />
+                K = Correct / reset timer<br />
+                F = Error / -0,20 EUR / reset timer
+              </div>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+    <button
+      class="fullscreen-toggle"
+      id="fullscreenButton"
+      type="button"
+      aria-label="Enter fullscreen"
+      title="Vollbild"
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M8 3H4a1 1 0 0 0-1 1v4" />
+        <path d="M16 3h4a1 1 0 0 1 1 1v4" />
+        <path d="M21 16v4a1 1 0 0 1-1 1h-4" />
+        <path d="M3 16v4a1 1 0 0 0 1 1h4" />
+      </svg>
+    </button>
+
+    <script>
+      const START_AMOUNT = 40;
+      const MIN_AMOUNT = 20;
+      const PENALTY_PER_ERROR = 0.2;
+      const COUNTDOWN_SECONDS = 5;
+      const CENTS_PER_EURO = 100;
+      const START_AMOUNT_CENTS = Math.round(START_AMOUNT * CENTS_PER_EURO);
+      const MIN_AMOUNT_CENTS = Math.round(MIN_AMOUNT * CENTS_PER_EURO);
+      const PENALTY_PER_ERROR_CENTS = Math.round(PENALTY_PER_ERROR * CENTS_PER_EURO);
+
+      const amountValue = document.getElementById("amountValue");
+      const countdownValue = document.getElementById("countdownValue");
+      const stateBadge = document.getElementById("stateBadge");
+      const stateIcon = document.getElementById("stateIcon");
+      const stateText = document.getElementById("stateText");
+      const statusState = document.getElementById("statusState");
+      const statusErrors = document.getElementById("statusErrors");
+      const statusDeduction = document.getElementById("statusDeduction");
+      const toggleButton = document.getElementById("toggleButton");
+      const correctButton = document.getElementById("correctButton");
+      const errorButton = document.getElementById("errorButton");
+      const undoButton = document.getElementById("undoButton");
+      const resetButton = document.getElementById("resetButton");
+      const lastActionText = document.getElementById("lastActionText");
+      const fullscreenButton = document.getElementById("fullscreenButton");
+
+      const PLAY_ICON = `
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <path d="M8 6.5v11l9-5.5-9-5.5Z"></path>
+        </svg>
+      `;
+
+      const PAUSE_ICON = `
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <path d="M7 6h4v12H7zM13 6h4v12h-4z"></path>
+        </svg>
+      `;
+
+      const appState = {
+        amountCents: START_AMOUNT_CENTS,
+        errorCount: 0,
+        totalDeductedCents: 0,
+        countdown: COUNTDOWN_SECONDS,
+        lastAction: "Ready. Timer paused.",
+        isRunning: false,
+        startedAt: null,
+        elapsedBeforePause: 0,
+        rafId: null,
+        hasTimedOutInCycle: false,
+        timeoutHandle: null,
+      };
+
+      function formatAmount(cents) {
+        return `${(cents / CENTS_PER_EURO).toFixed(2).replace(".", ",")} EUR`;
+      }
+
+      function triggerAmountPulse() {
+        amountValue.classList.remove("pulse");
+        void amountValue.offsetWidth;
+        amountValue.classList.add("pulse");
+      }
+
+      function triggerDeductionPulse() {
+        amountValue.classList.remove("pulse", "deduction-pulse");
+        void amountValue.offsetWidth;
+        amountValue.classList.add("deduction-pulse", "pulse");
+      }
+
+      function clearDeductionPulse() {
+        amountValue.classList.remove("deduction-pulse", "pulse");
+      }
+
+      function triggerTimeoutFlash() {
+        countdownValue.classList.remove("timeout-flash");
+        void countdownValue.offsetWidth;
+        countdownValue.classList.add("timeout-flash");
+      }
+
+      function clearTimeoutFlash() {
+        countdownValue.classList.remove("timeout-flash");
+      }
+
+      function clearPendingTimeout() {
+        if (appState.timeoutHandle) {
+          clearTimeout(appState.timeoutHandle);
+          appState.timeoutHandle = null;
+        }
+      }
+
+      function isTypingTarget(target) {
+        if (!target) {
+          return false;
+        }
+
+        const tagName = target.tagName;
+        return (
+          target.isContentEditable ||
+          tagName === "INPUT" ||
+          tagName === "TEXTAREA" ||
+          tagName === "SELECT"
+        );
+      }
+
+      function computeCountdown(now) {
+        const elapsedMs = appState.isRunning
+          ? appState.elapsedBeforePause + (now - appState.startedAt)
+          : appState.elapsedBeforePause;
+
+        const elapsedSeconds = Math.floor(elapsedMs / 1000);
+        return Math.max(0, COUNTDOWN_SECONDS - elapsedSeconds);
+      }
+
+      function updateCountdown(now = performance.now()) {
+        appState.countdown = computeCountdown(now);
+        countdownValue.textContent = String(appState.countdown);
+      }
+
+      function render() {
+        amountValue.textContent = formatAmount(appState.amountCents);
+        updateCountdown();
+
+        const runningLabel = appState.isRunning ? "Running" : "Paused";
+        stateText.textContent = runningLabel;
+        stateIcon.innerHTML = appState.isRunning ? PAUSE_ICON : PLAY_ICON;
+        statusState.textContent = runningLabel;
+        statusErrors.textContent = String(appState.errorCount);
+        statusDeduction.textContent = formatAmount(appState.totalDeductedCents);
+        lastActionText.textContent = appState.lastAction;
+        toggleButton.textContent = appState.isRunning ? "Pause" : "Play";
+        undoButton.disabled = appState.errorCount === 0;
+      }
+
+      function resetCountdown(now = performance.now()) {
+        clearPendingTimeout();
+        appState.elapsedBeforePause = 0;
+        appState.countdown = COUNTDOWN_SECONDS;
+        appState.hasTimedOutInCycle = false;
+
+        if (appState.isRunning) {
+          appState.startedAt = now;
+        } else {
+          appState.startedAt = null;
+        }
+
+        countdownValue.textContent = String(COUNTDOWN_SECONDS);
+      }
+
+      function updateFullscreenButton() {
+        const isFullscreen = Boolean(document.fullscreenElement);
+        fullscreenButton.setAttribute(
+          "aria-label",
+          isFullscreen ? "Exit fullscreen" : "Enter fullscreen"
+        );
+        fullscreenButton.title = isFullscreen ? "Vollbild beenden" : "Vollbild";
+      }
+
+      async function toggleFullscreen() {
+        try {
+          if (document.fullscreenElement) {
+            await document.exitFullscreen();
+          } else {
+            await document.documentElement.requestFullscreen();
+          }
+        } catch (error) {
+          appState.lastAction = "Fullscreen is not available in this browser.";
+          render();
+        }
+      }
+
+      function animationLoop(now) {
+        updateCountdown(now);
+
+        if (appState.isRunning && appState.countdown === 0 && !appState.hasTimedOutInCycle) {
+          appState.hasTimedOutInCycle = true;
+          triggerTimeoutFlash();
+          appState.timeoutHandle = window.setTimeout(() => {
+            appState.timeoutHandle = null;
+            registerError("timeout");
+          }, 240);
+          return;
+        }
+
+        if (appState.isRunning) {
+          appState.rafId = requestAnimationFrame(animationLoop);
+        }
+      }
+
+      function resumeAnimationLoop() {
+        if (!appState.isRunning || appState.timeoutHandle) {
+          return;
+        }
+
+        if (appState.rafId) {
+          cancelAnimationFrame(appState.rafId);
+        }
+
+        appState.rafId = requestAnimationFrame(animationLoop);
+      }
+
+      function startTimer() {
+        if (appState.isRunning) {
+          return;
+        }
+
+        appState.isRunning = true;
+        appState.startedAt = performance.now();
+        render();
+        appState.rafId = requestAnimationFrame(animationLoop);
+      }
+
+      function pauseTimer() {
+        if (!appState.isRunning) {
+          return;
+        }
+
+        clearPendingTimeout();
+        appState.elapsedBeforePause += performance.now() - appState.startedAt;
+        appState.isRunning = false;
+        appState.startedAt = null;
+        appState.hasTimedOutInCycle = false;
+
+        if (appState.rafId) {
+          cancelAnimationFrame(appState.rafId);
+          appState.rafId = null;
+        }
+
+        render();
+      }
+
+      function toggleTimer() {
+        if (appState.isRunning) {
+          pauseTimer();
+        } else {
+          startTimer();
+        }
+      }
+
+      function registerCorrectAnswer() {
+        resetCountdown();
+        appState.lastAction = "Correct answer: timer reset.";
+        render();
+        resumeAnimationLoop();
+      }
+
+      function registerError(source, now = performance.now()) {
+        const didDeduct = appState.amountCents > MIN_AMOUNT_CENTS;
+
+        if (didDeduct) {
+          appState.amountCents = Math.max(
+            MIN_AMOUNT_CENTS,
+            appState.amountCents - PENALTY_PER_ERROR_CENTS
+          );
+          appState.errorCount += 1;
+          appState.totalDeductedCents = Math.min(
+            START_AMOUNT_CENTS - MIN_AMOUNT_CENTS,
+            appState.totalDeductedCents + PENALTY_PER_ERROR_CENTS
+          );
+          triggerDeductionPulse();
+        }
+
+        resetCountdown(now);
+        appState.lastAction = didDeduct
+          ? source === "timeout"
+            ? "Time expired: -0,20 EUR. Timer reset."
+            : "Error registered: -0,20 EUR. Timer reset."
+          : "Minimum amount reached. Timer reset.";
+        render();
+        resumeAnimationLoop();
+      }
+
+      function undoError() {
+        if (appState.errorCount <= 0) {
+          render();
+          return;
+        }
+
+        appState.errorCount = Math.max(0, appState.errorCount - 1);
+        appState.totalDeductedCents = Math.max(
+          0,
+          appState.totalDeductedCents - PENALTY_PER_ERROR_CENTS
+        );
+        appState.amountCents = Math.min(
+          START_AMOUNT_CENTS,
+          appState.amountCents + PENALTY_PER_ERROR_CENTS
+        );
+        appState.lastAction = "Last deduction undone.";
+        triggerAmountPulse();
+        render();
+      }
+
+      function resetApp() {
+        pauseTimer();
+        appState.amountCents = START_AMOUNT_CENTS;
+        appState.errorCount = 0;
+        appState.totalDeductedCents = 0;
+        appState.lastAction = "Reset complete. Timer paused.";
+        resetCountdown();
+        triggerAmountPulse();
+        render();
+      }
+
+      // ── WebSocket phone connection ──────────────────────────────────────────
+      let wsConn = null;
+      const wsUrlInput = document.getElementById('wsUrlInput');
+      const connectBtn = document.getElementById('connectBtn');
+      const connDot = document.getElementById('connDot');
+      const WS_URL_STORAGE_KEY = 'heatablesDashboardWsUrl';
+
+      function setConnStatus(status) {
+        connDot.dataset.status = status;
+        if (status === 'connected') {
+          connectBtn.textContent = 'Trennen';
+          connectBtn.classList.add('primary');
+          connectBtn.classList.remove('secondary');
+        } else {
+          connectBtn.textContent = 'Verbinden';
+          connectBtn.classList.add('secondary');
+          connectBtn.classList.remove('primary');
+        }
+      }
+
+      function setRemoteState(msg) {
+        if (typeof msg.amountCents === 'number') {
+          appState.amountCents = msg.amountCents;
+        }
+        if (typeof msg.errorCount === 'number') {
+          appState.errorCount = msg.errorCount;
+        } else {
+          appState.errorCount = Math.round(
+            Math.max(0, START_AMOUNT_CENTS - appState.amountCents) / PENALTY_PER_ERROR_CENTS
+          );
+        }
+        if (typeof msg.deductionCents === 'number') {
+          appState.totalDeductedCents = msg.deductionCents;
+        } else {
+          appState.totalDeductedCents = Math.max(0, START_AMOUNT_CENTS - appState.amountCents);
+        }
+        render();
+      }
+
+      function sendWsCommand(type, extra = {}) {
+        if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
+          return false;
+        }
+        try {
+          wsConn.send(JSON.stringify({ type, ...extra }));
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
+
+      function connectWs() {
+        if (wsConn) {
+          wsConn.close();
+          wsConn = null;
+          setConnStatus('disconnected');
+          appState.lastAction = 'Verbindung zum Handy getrennt.';
+          render();
+          return;
+        }
+        const url = wsUrlInput.value.trim();
+        if (!url) return;
+        localStorage.setItem(WS_URL_STORAGE_KEY, url);
+        setConnStatus('connecting');
+        try {
+          wsConn = new WebSocket(url);
+          wsConn.onopen = () => {
+            setConnStatus('connected');
+            appState.lastAction = 'Handy verbunden.';
+            sendWsCommand('state_request');
+            render();
+          };
+          wsConn.onclose = () => {
+            wsConn = null;
+            setConnStatus('disconnected');
+            appState.lastAction = 'Verbindung getrennt.';
+            render();
+          };
+          wsConn.onerror = () => {
+            wsConn = null;
+            setConnStatus('error');
+            appState.lastAction = 'Verbindungsfehler.';
+            render();
+          };
+          wsConn.onmessage = (e) => {
+            try {
+              const msg = JSON.parse(e.data);
+              if (msg.type === 'state') {
+                setRemoteState(msg);
+                if (typeof msg.isRunning === 'boolean') {
+                  if (msg.isRunning && !appState.isRunning) {
+                    startTimer();
+                  } else if (!msg.isRunning && appState.isRunning) {
+                    pauseTimer();
+                  }
+                }
+              } else if (msg.type === 'correct') {
+                registerCorrectAnswer();
+              } else if (msg.type === 'error' || msg.type === 'timeout') {
+                registerError('phone');
+              } else if (msg.type === 'ma_start') {
+                startTimer();
+              } else if (msg.type === 'ma_stop') {
+                pauseTimer();
+              }
+            } catch (_) {}
+          };
+        } catch (_) {
+          wsConn = null;
+          setConnStatus('error');
+        }
+      }
+
+      function registerCorrectAnswerAction() {
+        if (sendWsCommand('correct')) {
+          appState.lastAction = 'Correct answer sent to phone.';
+          render();
+          return;
+        }
+        registerCorrectAnswer();
+      }
+
+      function registerErrorAction() {
+        if (sendWsCommand('error')) {
+          appState.lastAction = 'Error sent to phone.';
+          render();
+          return;
+        }
+        registerError('manual');
+      }
+
+      function undoErrorAction() {
+        if (sendWsCommand('undo')) {
+          appState.lastAction = 'Undo sent to phone.';
+          render();
+          return;
+        }
+        undoError();
+      }
+
+      function resetAppAction() {
+        if (sendWsCommand('reset')) {
+          appState.lastAction = 'Reset sent to phone.';
+          render();
+          return;
+        }
+        resetApp();
+      }
+
+      toggleButton.addEventListener("click", toggleTimer);
+      correctButton.addEventListener("click", registerCorrectAnswerAction);
+      errorButton.addEventListener("click", registerErrorAction);
+      undoButton.addEventListener("click", undoErrorAction);
+      resetButton.addEventListener("click", resetAppAction);
+      fullscreenButton.addEventListener("click", toggleFullscreen);
+      amountValue.addEventListener("animationend", clearDeductionPulse);
+      countdownValue.addEventListener("animationend", clearTimeoutFlash);
+      document.addEventListener("fullscreenchange", updateFullscreenButton);
+
+      window.addEventListener("keydown", (event) => {
+        if (isTypingTarget(event.target)) {
+          return;
+        }
+
+        if (event.code === "Space") {
+          event.preventDefault();
+          toggleTimer();
+          return;
+        }
+
+        const lowerKey = event.key.toLowerCase();
+
+        if (lowerKey === "k" && !event.repeat) {
+          event.preventDefault();
+          registerCorrectAnswerAction();
+          return;
+        }
+
+        if (lowerKey === "f" && !event.repeat) {
+          event.preventDefault();
+          registerErrorAction();
+        }
+      });
+
+      wsUrlInput.value =
+        localStorage.getItem(WS_URL_STORAGE_KEY) ||
+        ((window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+          ? 'ws://127.0.0.1:8080'
+          : '');
+
+      connectBtn.addEventListener('click', connectWs);
+      wsUrlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectWs(); });
+      setConnStatus('disconnected');
+      updateFullscreenButton();
+      render();
+    </script>
+  </body>
+</html>
