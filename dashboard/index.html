@@ -502,10 +502,7 @@
               <p class="amount" id="amountValue">40,00 EUR</p>
             </section>
 
-            <section class="countdown-wrap" aria-labelledby="countdownLabel">
-              <div class="label" id="countdownLabel">Next Answer In</div>
-              <p class="countdown" id="countdownValue">5</p>
-            </section>
+
           </div>
         </section>
 
@@ -574,8 +571,8 @@
               <div class="status-label">Shortcuts</div>
               <div class="status-value shortcut-text">
                 Space = Play/Pause<br />
-                K = Correct / reset timer<br />
-                F = Error / -0,20 EUR / reset timer
+                K = Richtige Antwort<br />
+                F = Fehler -0,20 EUR
               </div>
             </article>
           </div>
@@ -601,14 +598,12 @@
       const START_AMOUNT = 40;
       const MIN_AMOUNT = 20;
       const PENALTY_PER_ERROR = 0.2;
-      const COUNTDOWN_SECONDS = 5;
       const CENTS_PER_EURO = 100;
       const START_AMOUNT_CENTS = Math.round(START_AMOUNT * CENTS_PER_EURO);
       const MIN_AMOUNT_CENTS = Math.round(MIN_AMOUNT * CENTS_PER_EURO);
       const PENALTY_PER_ERROR_CENTS = Math.round(PENALTY_PER_ERROR * CENTS_PER_EURO);
 
       const amountValue = document.getElementById("amountValue");
-      const countdownValue = document.getElementById("countdownValue");
       const stateBadge = document.getElementById("stateBadge");
       const stateIcon = document.getElementById("stateIcon");
       const stateText = document.getElementById("stateText");
@@ -639,14 +634,8 @@
         amountCents: START_AMOUNT_CENTS,
         errorCount: 0,
         totalDeductedCents: 0,
-        countdown: COUNTDOWN_SECONDS,
-        lastAction: "Ready. Timer paused.",
+        lastAction: "Bereit.",
         isRunning: false,
-        startedAt: null,
-        elapsedBeforePause: 0,
-        rafId: null,
-        hasTimedOutInCycle: false,
-        timeoutHandle: null,
       };
 
       function formatAmount(cents) {
@@ -669,23 +658,6 @@
         amountValue.classList.remove("deduction-pulse", "pulse");
       }
 
-      function triggerTimeoutFlash() {
-        countdownValue.classList.remove("timeout-flash");
-        void countdownValue.offsetWidth;
-        countdownValue.classList.add("timeout-flash");
-      }
-
-      function clearTimeoutFlash() {
-        countdownValue.classList.remove("timeout-flash");
-      }
-
-      function clearPendingTimeout() {
-        if (appState.timeoutHandle) {
-          clearTimeout(appState.timeoutHandle);
-          appState.timeoutHandle = null;
-        }
-      }
-
       function isTypingTarget(target) {
         if (!target) {
           return false;
@@ -700,23 +672,8 @@
         );
       }
 
-      function computeCountdown(now) {
-        const elapsedMs = appState.isRunning
-          ? appState.elapsedBeforePause + (now - appState.startedAt)
-          : appState.elapsedBeforePause;
-
-        const elapsedSeconds = Math.floor(elapsedMs / 1000);
-        return Math.max(0, COUNTDOWN_SECONDS - elapsedSeconds);
-      }
-
-      function updateCountdown(now = performance.now()) {
-        appState.countdown = computeCountdown(now);
-        countdownValue.textContent = String(appState.countdown);
-      }
-
       function render() {
         amountValue.textContent = formatAmount(appState.amountCents);
-        updateCountdown();
 
         const runningLabel = appState.isRunning ? "Running" : "Paused";
         stateText.textContent = runningLabel;
@@ -727,21 +684,6 @@
         lastActionText.textContent = appState.lastAction;
         toggleButton.textContent = appState.isRunning ? "Pause" : "Play";
         undoButton.disabled = appState.errorCount === 0;
-      }
-
-      function resetCountdown(now = performance.now()) {
-        clearPendingTimeout();
-        appState.elapsedBeforePause = 0;
-        appState.countdown = COUNTDOWN_SECONDS;
-        appState.hasTimedOutInCycle = false;
-
-        if (appState.isRunning) {
-          appState.startedAt = now;
-        } else {
-          appState.startedAt = null;
-        }
-
-        countdownValue.textContent = String(COUNTDOWN_SECONDS);
       }
 
       function updateFullscreenButton() {
@@ -766,63 +708,15 @@
         }
       }
 
-      function animationLoop(now) {
-        updateCountdown(now);
-
-        if (appState.isRunning && appState.countdown === 0 && !appState.hasTimedOutInCycle) {
-          appState.hasTimedOutInCycle = true;
-          triggerTimeoutFlash();
-          appState.timeoutHandle = window.setTimeout(() => {
-            appState.timeoutHandle = null;
-            registerError("timeout");
-          }, 240);
-          return;
-        }
-
-        if (appState.isRunning) {
-          appState.rafId = requestAnimationFrame(animationLoop);
-        }
-      }
-
-      function resumeAnimationLoop() {
-        if (!appState.isRunning || appState.timeoutHandle) {
-          return;
-        }
-
-        if (appState.rafId) {
-          cancelAnimationFrame(appState.rafId);
-        }
-
-        appState.rafId = requestAnimationFrame(animationLoop);
-      }
-
       function startTimer() {
-        if (appState.isRunning) {
-          return;
-        }
-
+        if (appState.isRunning) return;
         appState.isRunning = true;
-        appState.startedAt = performance.now();
         render();
-        appState.rafId = requestAnimationFrame(animationLoop);
       }
 
       function pauseTimer() {
-        if (!appState.isRunning) {
-          return;
-        }
-
-        clearPendingTimeout();
-        appState.elapsedBeforePause += performance.now() - appState.startedAt;
+        if (!appState.isRunning) return;
         appState.isRunning = false;
-        appState.startedAt = null;
-        appState.hasTimedOutInCycle = false;
-
-        if (appState.rafId) {
-          cancelAnimationFrame(appState.rafId);
-          appState.rafId = null;
-        }
-
         render();
       }
 
@@ -835,13 +729,11 @@
       }
 
       function registerCorrectAnswer() {
-        resetCountdown();
-        appState.lastAction = "Correct answer: timer reset.";
+        appState.lastAction = "Richtige Antwort.";
         render();
-        resumeAnimationLoop();
       }
 
-      function registerError(source, now = performance.now()) {
+      function registerError(source) {
         const didDeduct = appState.amountCents > MIN_AMOUNT_CENTS;
 
         if (didDeduct) {
@@ -857,14 +749,8 @@
           triggerDeductionPulse();
         }
 
-        resetCountdown(now);
-        appState.lastAction = didDeduct
-          ? source === "timeout"
-            ? "Time expired: -0,20 EUR. Timer reset."
-            : "Error registered: -0,20 EUR. Timer reset."
-          : "Minimum amount reached. Timer reset.";
+        appState.lastAction = didDeduct ? "Fehler: -0,20 EUR." : "Minimum erreicht.";
         render();
-        resumeAnimationLoop();
       }
 
       function undoError() {
@@ -892,8 +778,7 @@
         appState.amountCents = START_AMOUNT_CENTS;
         appState.errorCount = 0;
         appState.totalDeductedCents = 0;
-        appState.lastAction = "Reset complete. Timer paused.";
-        resetCountdown();
+        appState.lastAction = "Reset.";
         triggerAmountPulse();
         render();
       }
@@ -966,8 +851,11 @@
           wsConn = new WebSocket(url);
           wsConn.onopen = () => {
             setConnStatus('connected');
-            appState.lastAction = 'Handy verbunden.';
-            sendWsCommand('state_request');
+            appState.amountCents = START_AMOUNT_CENTS;
+            appState.errorCount = 0;
+            appState.totalDeductedCents = 0;
+            appState.lastAction = 'Handy verbunden. Punktestand zurückgesetzt.';
+            triggerAmountPulse();
             render();
           };
           wsConn.onclose = () => {
@@ -1054,7 +942,6 @@
       resetButton.addEventListener("click", resetAppAction);
       fullscreenButton.addEventListener("click", toggleFullscreen);
       amountValue.addEventListener("animationend", clearDeductionPulse);
-      countdownValue.addEventListener("animationend", clearTimeoutFlash);
       document.addEventListener("fullscreenchange", updateFullscreenButton);
 
       window.addEventListener("keydown", (event) => {

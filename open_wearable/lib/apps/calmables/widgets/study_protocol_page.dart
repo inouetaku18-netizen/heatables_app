@@ -87,6 +87,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
   AnimationController? _judgementAnim; // drives smooth ring 1.0→0.0 over 5s
   int _maCorrectCount = 0;
   int _maWrongCount = 0;
+  int _totalMaWrongCount = 0; // accumulates across all MA blocks for dashboard
   final _random = Random();
 
   // Transition state
@@ -177,7 +178,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
   }
 
   int get _dashboardAmountCents =>
-      (4000 - _maWrongCount * 20).clamp(2000, 4000);
+      (4000 - _totalMaWrongCount * 20).clamp(2000, 4000);
 
   int get _dashboardDeductionCents => 4000 - _dashboardAmountCents;
 
@@ -262,6 +263,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
         case 'reset':
           setState(() {
             _maWrongCount = 0;
+            _totalMaWrongCount = 0;
           });
           _broadcastDashboardState();
           break;
@@ -385,6 +387,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
     _log('ma_${number}_start');
     _maCorrectCount = 0;
     _maWrongCount = 0;
+    // _totalMaWrongCount is NOT reset here – it accumulates across all MA blocks
     // _maStartNumber is already set by _readyMa*
     _maCurrentNumber = _maStartNumber;
     _maExpectedAnswer = _maStartNumber; // first: VP says the start number
@@ -512,6 +515,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
     _maJudgementTimer?.cancel();
     _judgementAnim?.stop();
     _maWrongCount++;
+    _totalMaWrongCount++;
     _maCurrentNumber = _maStartNumber;
     _maExpectedAnswer = _maStartNumber; // restart: VP says start number again
     _log('ma_wrong_restart_from_x_$_maStartNumber');
@@ -522,7 +526,11 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
   }
 
   void _onMaTimeout() {
+    if (_phase != _Phase.ma1Running &&
+        _phase != _Phase.ma2Running &&
+        _phase != _Phase.ma3Running) return;
     _maWrongCount++;
+    _totalMaWrongCount++;
     _maCurrentNumber = _maStartNumber;
     _maExpectedAnswer = _maStartNumber; // restart: VP says start number again
     _log('ma_timeout_restart_from_x_$_maStartNumber');
@@ -595,6 +603,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
         _readyMa1();
       case _Phase.ma1Running:
         _maJudgementTimer?.cancel();
+        _judgementAnim?.stop();
         _log('ma_1_end');
         _readyHit2();
       case _Phase.hit2Running:
@@ -602,6 +611,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
         _readyMa2();
       case _Phase.ma2Running:
         _maJudgementTimer?.cancel();
+        _judgementAnim?.stop();
         _log('ma_2_end');
         _readyHit3();
       case _Phase.hit3Running:
@@ -609,6 +619,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
         _readyMa3();
       case _Phase.ma3Running:
         _maJudgementTimer?.cancel();
+        _judgementAnim?.stop();
         _log('ma_3_end');
         _log('mast_end');
         setState(() => _phase = _Phase.surveyHintPostMast);
