@@ -435,7 +435,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
       _phaseTimer?.cancel();
       _maJudgementTimer?.cancel();
       _judgementAnim?.stop();
-      _beginHit(1, 90, _readyMa1);
+      setState(() => _phase = _Phase.mastPrepare);
     }, skipCallback: _readyHit2);
   }
 
@@ -444,11 +444,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
     _transitionIsMa = false;
     _awaitTransition('Hand Immersion 2', 'Hand Immersion starten',
         Icons.water_rounded, _doHit2, backCallback: () {
-      _phaseTimer?.cancel();
-      _maJudgementTimer?.cancel();
-      _judgementAnim?.stop();
-      _beginMa(1, 45, _readyHit2);
-    });
+      _readyMa1();
+    }, skipCallback: _readyMa2);
   }
 
   void _doHit2() => _beginHit(2, 60, _readyMa2);
@@ -460,7 +457,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
       _phaseTimer?.cancel();
       _maJudgementTimer?.cancel();
       _judgementAnim?.stop();
-      _beginHit(2, 60, _readyMa2);
+      _readyHit2();
     }, skipCallback: _readyHit3);
   }
 
@@ -469,11 +466,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
     _transitionIsMa = false;
     _awaitTransition('Hand Immersion 3', 'Hand Immersion starten',
         Icons.water_rounded, _doHit3, backCallback: () {
-      _phaseTimer?.cancel();
-      _maJudgementTimer?.cancel();
-      _judgementAnim?.stop();
-      _beginMa(2, 60, _readyHit3);
-    });
+      _readyMa2();
+    }, skipCallback: _readyMa3);
   }
 
   void _doHit3() => _beginHit(3, 60, _readyMa3);
@@ -485,7 +479,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
       _phaseTimer?.cancel();
       _maJudgementTimer?.cancel();
       _judgementAnim?.stop();
-      _beginHit(3, 60, _readyMa3);
+      _readyHit3();
     }, skipCallback: () {
       _log('ma_3_skip');
       _log('mast_end');
@@ -588,13 +582,9 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
         setState(() => _phase = _Phase.relaxationReady);
       // Individual MAST phases: skip only that phase
       case _Phase.pendingTransition:
-        // If it's an MA transition, skip the MA entirely and go to the next step after it
-        if (_transitionIsMa) {
-          // _transitionCallback is _startMaX, which calls _beginMa(X, ..., onDone)
-          // We need to jump straight to onDone. Use a fake _beginMa that just calls onDone.
-          // Determine which MA we're about to start by checking which _startMaX is stored.
-          // Simpler: store a dedicated _transitionSkipCallback set alongside _transitionCallback.
-          _transitionSkipCallback?.call();
+        // Always prefer skipCallback if set; otherwise fall back to transitionCallback
+        if (_transitionSkipCallback != null) {
+          _transitionSkipCallback!.call();
         } else {
           _transitionCallback?.call();
         }
