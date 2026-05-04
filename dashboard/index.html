@@ -37,7 +37,7 @@
           radial-gradient(circle at top, rgba(44, 110, 131, 0.08), transparent 32%),
           linear-gradient(180deg, #f3f6f8 0%, var(--bg) 100%);
         color: var(--text);
-        overflow: hidden;
+        overflow: auto;
       }
 
       button,
@@ -528,14 +528,6 @@
             </div>
           </div>
 
-          <div class="controls">
-            <button class="button primary" id="toggleButton" type="button">Play</button>
-            <button class="button secondary" id="correctButton" type="button">Correct</button>
-            <button class="button secondary" id="errorButton" type="button">Error -0,20 EUR</button>
-            <button class="button" id="undoButton" type="button">Undo</button>
-            <button class="button warning" id="resetButton" type="button">Reset</button>
-          </div>
-
           <div class="message-card" aria-live="polite">
             <div class="message-label">Last Action</div>
             <div class="message-text" id="lastActionText">Ready. Timer paused.</div>
@@ -567,14 +559,7 @@
               <div class="status-value">0,20 EUR / error</div>
             </article>
 
-            <article class="status-card">
-              <div class="status-label">Shortcuts</div>
-              <div class="status-value shortcut-text">
-                Space = Play/Pause<br />
-                K = Richtige Antwort<br />
-                F = Fehler -0,20 EUR
-              </div>
-            </article>
+
           </div>
         </section>
       </main>
@@ -610,11 +595,6 @@
       const statusState = document.getElementById("statusState");
       const statusErrors = document.getElementById("statusErrors");
       const statusDeduction = document.getElementById("statusDeduction");
-      const toggleButton = document.getElementById("toggleButton");
-      const correctButton = document.getElementById("correctButton");
-      const errorButton = document.getElementById("errorButton");
-      const undoButton = document.getElementById("undoButton");
-      const resetButton = document.getElementById("resetButton");
       const lastActionText = document.getElementById("lastActionText");
       const fullscreenButton = document.getElementById("fullscreenButton");
 
@@ -682,8 +662,6 @@
         statusErrors.textContent = String(appState.errorCount);
         statusDeduction.textContent = formatAmount(appState.totalDeductedCents);
         lastActionText.textContent = appState.lastAction;
-        toggleButton.textContent = appState.isRunning ? "Pause" : "Play";
-        undoButton.disabled = appState.errorCount === 0;
       }
 
       function updateFullscreenButton() {
@@ -899,75 +877,9 @@
         }
       }
 
-      function registerCorrectAnswerAction() {
-        if (sendWsCommand('correct')) {
-          appState.lastAction = 'Correct answer sent to phone.';
-          render();
-          return;
-        }
-        registerCorrectAnswer();
-      }
-
-      function registerErrorAction() {
-        if (sendWsCommand('error')) {
-          appState.lastAction = 'Error sent to phone.';
-          render();
-          return;
-        }
-        registerError('manual');
-      }
-
-      function undoErrorAction() {
-        if (sendWsCommand('undo')) {
-          appState.lastAction = 'Undo sent to phone.';
-          render();
-          return;
-        }
-        undoError();
-      }
-
-      function resetAppAction() {
-        if (sendWsCommand('reset')) {
-          appState.lastAction = 'Reset sent to phone.';
-          render();
-          return;
-        }
-        resetApp();
-      }
-
-      toggleButton.addEventListener("click", toggleTimer);
-      correctButton.addEventListener("click", registerCorrectAnswerAction);
-      errorButton.addEventListener("click", registerErrorAction);
-      undoButton.addEventListener("click", undoErrorAction);
-      resetButton.addEventListener("click", resetAppAction);
       fullscreenButton.addEventListener("click", toggleFullscreen);
       amountValue.addEventListener("animationend", clearDeductionPulse);
       document.addEventListener("fullscreenchange", updateFullscreenButton);
-
-      window.addEventListener("keydown", (event) => {
-        if (isTypingTarget(event.target)) {
-          return;
-        }
-
-        if (event.code === "Space") {
-          event.preventDefault();
-          toggleTimer();
-          return;
-        }
-
-        const lowerKey = event.key.toLowerCase();
-
-        if (lowerKey === "k" && !event.repeat) {
-          event.preventDefault();
-          registerCorrectAnswerAction();
-          return;
-        }
-
-        if (lowerKey === "f" && !event.repeat) {
-          event.preventDefault();
-          registerErrorAction();
-        }
-      });
 
       wsUrlInput.value =
         localStorage.getItem(WS_URL_STORAGE_KEY) ||
