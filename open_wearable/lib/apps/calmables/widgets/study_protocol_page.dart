@@ -13,6 +13,7 @@ enum _Phase {
   participantIdInput,
   syncDevices,
   calmablesPowerAdjust,
+  demographicsInput,
   akklimatisation,
   akklimatisationRunning,
   baselineReady,
@@ -625,7 +626,9 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
     _log('skip_${_phase.name}');
     switch (_phase) {
       case _Phase.calmablesPowerAdjust:
-        setState(() => _phase = _Phase.akklimatisation);
+        setState(() => _phase = _Phase.demographicsInput);
+      case _Phase.demographicsInput:
+        _startAkklimatisation();
       case _Phase.akklimatisation:
         _log('akklimatisation_skip');
         setState(() => _phase = _Phase.baselineReady);
@@ -716,6 +719,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
     switch (_phase) {
       case _Phase.calmablesPowerAdjust:
         setState(() => _phase = _Phase.syncDevices);
+      case _Phase.demographicsInput:
+        setState(() => _phase = _Phase.calmablesPowerAdjust);
       case _Phase.akklimatisation:
         _phaseTimer?.cancel();
         setState(() {
@@ -1276,6 +1281,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
       _Phase.participantIdInput => _buildParticipantIdInput(),
       _Phase.syncDevices => _buildSyncDevices(),
       _Phase.calmablesPowerAdjust => _buildCalmablesPowerAdjust(),
+      _Phase.demographicsInput => _buildDemographicsInput(),
       _Phase.akklimatisation => _buildAkklimatisation(),
       _Phase.akklimatisationRunning => _buildAkklimatisationRunning(),
       _Phase.baselineReady => _buildBaselineReady(),
@@ -1836,11 +1842,21 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
         const Icon(Icons.sync_rounded, size: 72, color: _kGreen),
         const SizedBox(height: 24),
         _phaseTitle('Geräte synchronisieren'),
-        const SizedBox(height: 16),
-        const Text(
-          'Bitte alle Geräte synchronisieren bevor das Protokoll startet.',
-          textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 16),
+        const SizedBox(height: 24),
+        _buildSyncStep('1', Icons.monitor_heart_outlined, 'EKG starten'),
+        const SizedBox(height: 12),
+        _buildSyncStep('2', Icons.device_hub_rounded, 'RespiBAN starten'),
+        const SizedBox(height: 12),
+        _buildSyncStep(
+          '3',
+          Icons.back_hand_outlined,
+          'Probanden auffordern, mit dem Ring auf das RespiBAN zu schlagen – gleichzeitig den PPG-Sensor des EKG-Geräts abziehen',
+        ),
+        const SizedBox(height: 12),
+        _buildSyncStep(
+          '4',
+          Icons.touch_app_rounded,
+          'Danach möglichst zügig auf „Weiter" tippen',
         ),
         const SizedBox(height: 40),
         SizedBox(
@@ -1851,6 +1867,40 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
             icon: const Icon(Icons.check_rounded),
             label: const Text('Geräte synchronisiert – Weiter'),
             style: _primaryStyle(),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSyncStep(String number, IconData icon, String text) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: _kGreen,
+            shape: BoxShape.circle,
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            number,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 14,
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Icon(icon, size: 22, color: _kGreen),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            text,
+            style: const TextStyle(fontSize: 15),
           ),
         ),
       ],
@@ -1885,10 +1935,37 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
             onPressed: () {
               _calmablesPowerValue = _relaxationCurrentPwm;
               _log('calmables_power_set_$_calmablesPowerValue');
-              _startAkklimatisation();
+              setState(() => _phase = _Phase.demographicsInput);
             },
             icon: const Icon(Icons.check_rounded),
-            label: const Text('Wert speichern & zur Akklimatisation'),
+            label: const Text('Wert speichern & weiter'),
+            style: _primaryStyle(),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDemographicsInput() {
+    return Column(
+      children: [
+        const SizedBox(height: 48),
+        const Icon(Icons.assignment_ind_outlined, size: 72, color: _kGreen),
+        const SizedBox(height: 24),
+        _phaseTitle('Demografische Daten'),
+        const SizedBox(height: 16),
+        const Text(
+          'Bitte den Probanden auffordern, den Demografiefragebogen auszufüllen.',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 16),
+        ),
+        const SizedBox(height: 40),
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed: _startAkklimatisation,
+            icon: const Icon(Icons.check_rounded),
+            label: const Text('Fragebogen ausgefüllt – zur Akklimatisation'),
             style: _primaryStyle(),
           ),
         ),
