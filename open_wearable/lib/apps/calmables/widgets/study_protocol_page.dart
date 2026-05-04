@@ -547,8 +547,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
   void _startRelaxation() {
     _log('relaxation_start');
     setState(() => _phase = _Phase.relaxationRunning);
-    _startPhaseTimer(5 * 60, () {
-      _log('relaxation_end');
+    _startPhaseTimer(15 * 60, () {
       if (mounted) setState(() => _phase = _Phase.surveyHintFinal);
     });
   }
@@ -1687,7 +1686,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
         description: _isCurrentBlockTreatment
             ? 'MAST abgeschlossen.\nBitte Versuchsperson zur Entspannung auffordern.\nCalmables wird während der Entspannung aktiv.'
             : 'MAST abgeschlossen.\nBitte Versuchsperson zur Entspannung auffordern.\nKein Calmables-Treatment in dieser Phase.',
-        buttonLabel: 'Relaxation starten (5 min)',
+        buttonLabel: 'Relaxation starten (15 min)',
         onStart: _startRelaxation,
       );
 
