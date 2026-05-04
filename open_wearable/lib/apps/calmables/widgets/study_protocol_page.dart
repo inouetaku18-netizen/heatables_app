@@ -24,8 +24,9 @@ enum _Phase {
   ma1Running,
   hit2Running,
   ma2Running,
-  hit3Running,
-  ma3Running,
+  hit3Running, ma3Running,
+  hit4Running, ma4Running,
+  hit5Running,
   surveyHintPostMast,
   relaxationReady,
   relaxationRunning,
@@ -196,7 +197,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
   bool get _dashboardTimerRunning =>
       _phase == _Phase.ma1Running ||
       _phase == _Phase.ma2Running ||
-      _phase == _Phase.ma3Running;
+      _phase == _Phase.ma3Running ||
+        _phase == _Phase.ma4Running;
 
   void _sendDashboardState(WebSocket ws) {
     try {
@@ -384,7 +386,9 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
     final phase = switch (number) {
       1 => _Phase.hit1Running,
       2 => _Phase.hit2Running,
-      _ => _Phase.hit3Running,
+      3 => _Phase.hit3Running,
+      4 => _Phase.hit4Running,
+      _ => _Phase.hit5Running,
     };
     setState(() => _phase = phase);
     _startPhaseTimer(durationSeconds, () {
@@ -405,7 +409,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
     final phase = switch (number) {
       1 => _Phase.ma1Running,
       2 => _Phase.ma2Running,
-      _ => _Phase.ma3Running,
+      3 => _Phase.ma3Running,
+      _ => _Phase.ma4Running,
     };
     setState(() {
       _phase = phase;
@@ -490,14 +495,47 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
       _maJudgementTimer?.cancel();
       _judgementAnim?.stop();
       _readyHit3();
+    }, skipCallback: _readyHit4);
+  }
+
+  void _startMa3() => _beginMa(3, 90, _readyHit4);
+
+  void _readyHit4() {
+    _transitionIsMa = false;
+    _awaitTransition('Hand Immersion 4', 'Hand Immersion starten',
+        Icons.water_rounded, _doHit4, backCallback: () {
+      _readyMa3();
+    }, skipCallback: _readyMa4);
+  }
+
+  void _doHit4() => _beginHit(4, 90, _readyMa4);
+  void _readyMa4() {
+    _maStartNumber = _randomMaStart();
+    _transitionIsMa = true;
+    _awaitTransition('Kopfrechnen 4', 'Kopfrechnen starten',
+        Icons.calculate_rounded, _startMa4, backCallback: () {
+      _phaseTimer?.cancel();
+      _maJudgementTimer?.cancel();
+      _judgementAnim?.stop();
+      _readyHit4();
+    }, skipCallback: _readyHit5);
+  }
+
+  void _startMa4() => _beginMa(4, 45, _readyHit5);
+
+  void _readyHit5() {
+    _transitionIsMa = false;
+    _awaitTransition('Hand Immersion 5', 'Hand Immersion starten',
+        Icons.water_rounded, _doHit5, backCallback: () {
+      _readyMa4();
     }, skipCallback: () {
-      _log('ma_3_skip');
+      _log('hit_5_skip');
       _log('mast_end');
       setState(() => _phase = _Phase.surveyHintPostMast);
     });
   }
 
-  void _startMa3() => _beginMa(3, 90, () {
+  void _doHit5() => _beginHit(5, 60, () {
         _log('mast_end');
         if (mounted) setState(() => _phase = _Phase.surveyHintPostMast);
       });
@@ -532,7 +570,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
   void _onMaTimeout() {
     if (_phase != _Phase.ma1Running &&
         _phase != _Phase.ma2Running &&
-        _phase != _Phase.ma3Running) return;
+        _phase != _Phase.ma3Running &&
+        _phase != _Phase.ma4Running) return;
     _maWrongCount++;
     _totalMaWrongCount++;
     _maCurrentNumber = _maStartNumber;
@@ -638,6 +677,17 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
         _maJudgementTimer?.cancel();
         _judgementAnim?.stop();
         _log('ma_3_end');
+        _readyHit4();
+      case _Phase.hit4Running:
+        _log('hit_4_end');
+        _readyMa4();
+      case _Phase.ma4Running:
+        _maJudgementTimer?.cancel();
+        _judgementAnim?.stop();
+        _log('ma_4_end');
+        _readyHit5();
+      case _Phase.hit5Running:
+        _log('hit_5_end');
         _log('mast_end');
         setState(() => _phase = _Phase.surveyHintPostMast);
       case _Phase.relaxationReady:
@@ -712,6 +762,12 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
         _beginMa(2, 60, _readyHit3);
       case _Phase.ma3Running:
         _beginHit(3, 60, _readyMa3);
+      case _Phase.hit4Running:
+        _beginMa(3, 90, _readyHit4);
+      case _Phase.ma4Running:
+        _beginHit(4, 90, _readyMa4);
+      case _Phase.hit5Running:
+        _beginMa(4, 45, _readyHit5);
       case _Phase.relaxationReady:
         setState(() => _phase = _Phase.surveyHintPostMast);
       case _Phase.relaxationRunning:
@@ -753,7 +809,10 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
         _phase == _Phase.hit2Running ||
         _phase == _Phase.ma2Running ||
         _phase == _Phase.hit3Running ||
-        _phase == _Phase.ma3Running) {
+        _phase == _Phase.ma3Running ||
+        _phase == _Phase.hit4Running ||
+        _phase == _Phase.ma4Running ||
+        _phase == _Phase.hit5Running) {
       return 'Phase überspringen';
     }
     return 'Schritt überspringen';
@@ -1234,6 +1293,9 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
       _Phase.ma2Running => _buildMaPhase(2, 60),
       _Phase.hit3Running => _buildHitPhase(3, 60),
       _Phase.ma3Running => _buildMaPhase(3, 90),
+      _Phase.hit4Running => _buildHitPhase(4, 90),
+      _Phase.ma4Running => _buildMaPhase(4, 45),
+      _Phase.hit5Running => _buildHitPhase(5, 60),
       _Phase.surveyHintPostMast => _buildSurveyHint(
           nextPhase: _Phase.relaxationReady,
           nextLabel: 'Weiter zur Entspannung',
