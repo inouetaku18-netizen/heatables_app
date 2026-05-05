@@ -17,6 +17,7 @@ import 'package:open_wearable/apps/calmables/widgets/autopilot_page.dart';
 import 'package:open_wearable/apps/calmables/widgets/study_protocol_page.dart';
 import 'package:open_wearable/models/wearable_display_group.dart';
 import 'package:open_wearable/view_models/sensor_configuration_provider.dart';
+import 'package:open_wearable/view_models/wearables_provider.dart';
 import 'package:open_wearable/widgets/devices/devices_page.dart';
 import 'package:provider/provider.dart';
 
@@ -162,11 +163,11 @@ class _CalmablesPageState extends State<CalmablesPage> {
   List<int> pwmHistory = [];
   static const int pwmHistoryLength = 50; // 表示用に長めに保持
 
-  Future<void> sendDataToCalmables(List<int> data) async {
+  Future<bool> sendDataToCalmables(List<int> data) async {
     final device = calmablesDevice;
     if (device == null) {
       debugPrint('No Calmables device connected, skipping BLE write.');
-      return;
+      return false;
     }
     try {
       final writeManager = device.getCapability<BleGattManager>();
@@ -196,6 +197,80 @@ class _CalmablesPageState extends State<CalmablesPage> {
     } catch (e) {
       debugPrint('Error in sendDataToCalmables: $e');
     }
+    return true;
+  }
+
+  /// Tries to find a Calmables wearable in the live WearablesProvider if the
+  /// Tries to find a Calmables wearable in the live WearablesProvider.
+  /// If not immediately available, waits up to [_kCalmablesSearchTimeout] for
+  /// the auto-connector to establish the BLE connection, showing a loading
+  /// dialog in the meantime.
+  /// Returns true if Calmables is (now) available.
+  static const Duration _kCalmablesSearchTimeout = Duration(seconds: 30);
+
+  Future<bool> _ensureCalmablesConnected() async {
+    if (calmablesDevice != null) return true;
+    if (!mounted) return false;
+
+    final provider = Provider.of<WearablesProvider>(context, listen: false);
+
+    Wearable? _findInProvider() => provider.wearables.cast<Wearable?>().firstWhere(
+          (w) => w!.name.toLowerCase().contains('calmables'),
+          orElse: () => null,
+        );
+
+    // Fast path: already in provider list
+    final existing = _findInProvider();
+    if (existing != null) {
+      setState(() => calmablesDevice = existing);
+      debugPrint('Calmables found immediately: ${existing.name}');
+      return true;
+    }
+
+    // Slow path: wait for auto-connector to connect the device
+    if (!mounted) return false;
+    final completer = Completer<bool>();
+
+    void listener() {
+      if (completer.isCompleted) return;
+      final found = _findInProvider();
+      if (found != null) {
+        if (mounted) setState(() => calmablesDevice = found);
+        debugPrint('Calmables auto-connected: ${found.name}');
+        completer.complete(true);
+      }
+    }
+
+    provider.addListener(listener);
+
+    // Show loading dialog while waiting
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => const AlertDialog(
+        content: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(width: 16),
+            Expanded(child: Text('Suche nach Calmables…')),
+          ],
+        ),
+      ),
+    );
+
+    // Timeout
+    Future.delayed(_kCalmablesSearchTimeout, () {
+      if (!completer.isCompleted) completer.complete(false);
+    });
+
+    final result = await completer.future;
+    provider.removeListener(listener);
+
+    // Dismiss loading dialog
+    if (mounted) Navigator.of(context, rootNavigator: true).pop();
+
+    return result;
   }
 
   void _initializePipeline() {
@@ -576,6 +651,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
             timestampExponent: widget.ppgSensor.timestampExponent,
             signalQualityStream: _signalQualityStream,
             onSendToCalmables: sendDataToCalmables,
+            onConnectCalmables: _ensureCalmablesConnected,
           ),
         ),
       );

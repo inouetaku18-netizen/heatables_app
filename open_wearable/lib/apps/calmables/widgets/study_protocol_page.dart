@@ -54,6 +54,7 @@ class StudyProtocolPage extends StatefulWidget {
 
   // Calmables control
   final Future<void> Function(List<int>)? onSendToCalmables;
+  final Future<bool> Function()? onConnectCalmables;
 
   const StudyProtocolPage({
     super.key,
@@ -68,6 +69,7 @@ class StudyProtocolPage extends StatefulWidget {
     this.signalQualityStream,
     this.timestampExponent = -3,
     this.onSendToCalmables,
+    this.onConnectCalmables,
   });
 
   @override
@@ -584,7 +586,36 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
     _startJudgementCountdown();
   }
 
-  void _startRelaxation() {
+  /// Transitions to [_Phase.calmablesPowerAdjust] and tries to auto-connect
+  /// the Calmables device so it is ready for the temperature preference step.
+  Future<void> _enterCalmablesPowerAdjust() async {
+    if (widget.onConnectCalmables != null) {
+      final connected = await widget.onConnectCalmables!();
+      if (!connected && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Calmables nicht gefunden – ggf. manuell verbinden'),
+            duration: Duration(seconds: 4),
+          ),
+        );
+      }
+    }
+    if (mounted) setState(() => _phase = _Phase.calmablesPowerAdjust);
+  }
+
+  void _startRelaxation() async {
+    // For treatment blocks, try to (re-)connect Calmables if not already connected.
+    if (_isCurrentBlockTreatment && widget.onConnectCalmables != null) {
+      final connected = await widget.onConnectCalmables!();
+      if (!connected && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Calmables nicht verbunden – Relaxation ohne Heizung'),
+            duration: Duration(seconds: 4),
+          ),
+        );
+      }
+    }
     _log('relaxation_start');
     setState(() => _phase = _Phase.relaxationRunning);
     _startPhaseTimer(15 * 60, () {
@@ -1806,10 +1837,16 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
         _phaseTitle('Protokoll abgeschlossen'),
         const SizedBox(height: 16),
         const Text(
-          'Alle Phasen beendet.\nAufnahme stoppen und Daten teilen.',
+          'Alle Phasen beendet. Bitte folgende Schritte durchführen:',
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 16),
         ),
+        const SizedBox(height: 24),
+        _buildSyncStep('1', Icons.monitor_heart_outlined, 'EKG stoppen'),
+        const SizedBox(height: 12),
+        _buildSyncStep('2', Icons.device_hub_rounded, 'RespiBAN stoppen'),
+        const SizedBox(height: 12),
+        _buildSyncStep('3', Icons.watch_rounded, 'Calmables Aufnahme beenden'),
         const SizedBox(height: 40),
         SizedBox(
           width: double.infinity,
@@ -1862,8 +1899,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
         SizedBox(
           width: double.infinity,
           child: ElevatedButton.icon(
-            onPressed: () =>
-                setState(() => _phase = _Phase.calmablesPowerAdjust),
+            onPressed: _enterCalmablesPowerAdjust,
             icon: const Icon(Icons.check_rounded),
             label: const Text('Geräte synchronisiert – Weiter'),
             style: _primaryStyle(),
