@@ -16,11 +16,11 @@ class _TimestampedSample {
 }
 
 class CalibrationResult {
-  final double baselineHeartRate;
-  final double triggerThreshold;
+  double baselineHeartRate;
+  double triggerThreshold;
   final double windowStd;
 
-  const CalibrationResult({
+  CalibrationResult({
     required this.baselineHeartRate,
     required this.triggerThreshold,
     required this.windowStd,
@@ -28,7 +28,7 @@ class CalibrationResult {
 }
 
 class HrCalibration {
-  static const Duration calibrationDuration = Duration(minutes: 5);
+  static const Duration calibrationDuration = Duration(seconds: 30);
   static const Duration windowDuration = Duration(seconds: 30);
   static const double _minGoodQualityRatio = 0.80;
   static const double _maxStabilityCoefficient = 0.10;
@@ -71,25 +71,30 @@ class HrCalibration {
     _isCalibrating = true;
     _startTime = DateTime.now();
 
-    _qualitySubscription = signalQualityStream.listen((quality) {
+    // Reuse quality subscription from continuous baseline if already active
+    _qualitySubscription ??= signalQualityStream.listen((quality) {
       _currentQuality = quality;
     });
 
     _hrSubscription = heartRateStream.listen((hr) {
-      if (!_isCalibrating) return;
       if (hr == null || !hr.isFinite) return;
 
+      final now = DateTime.now();
       _samples.add(_TimestampedSample(
-        time: DateTime.now(),
+        time: now,
         heartRate: hr,
         quality: _currentQuality,
       ));
+      // Keep only the latest windowDuration of samples for rolling evaluation
+      final cutoff = now.subtract(windowDuration);
+      _samples.removeWhere((s) => s.time.isBefore(cutoff));
 
       _evaluate();
 
-      if (DateTime.now().difference(_startTime!) >= calibrationDuration) {
-        stop();
+      if (_isCalibrating && now.difference(_startTime!) >= calibrationDuration) {
+        _isCalibrating = false;
         onCalibrationFinished?.call();
+        // Subscriptions remain active for continuous rolling trigger updates
       }
     });
   }
@@ -102,11 +107,40 @@ class HrCalibration {
     _qualitySubscription = null;
   }
 
+  /// Manually set Baseline and Trigger without running a calibration.
+  void setManualResult({required double baseline, required double trigger}) {
+    _latestResult = CalibrationResult(
+      baselineHeartRate: baseline,
+      triggerThreshold: trigger,
+      windowStd: 0,
+    );
+    onResultUpdated?.call(_latestResult);
+  }
+
   static const Duration _windowStep = Duration(seconds: 5);
 
   void _evaluate() {
+    if (_samples.isEmpty) return;
     final now = DateTime.now();
-    final start = _startTime!;
+    // Use the earliest available sample as rolling window origin
+    final start = _samples.first.time;
+
+    // Show a live partial baseline from all current samples
+    // (no quality/stability filter – just the running mean).
+    if (_samples.isNotEmpty) {
+      final hrs = _samples.map((s) => s.heartRate).toList();
+      final mean = hrs.reduce((a, b) => a + b) / hrs.length;
+      if (_latestResult != null) {
+        _latestResult!.baselineHeartRate = mean;
+      } else {
+        _latestResult = CalibrationResult(
+          baselineHeartRate: mean,
+          triggerThreshold: mean + 10,
+          windowStd: 0,
+        );
+      }
+      onResultUpdated?.call(_latestResult);
+    }
 
     CalibrationResult? bestResult;
 
@@ -134,18 +168,19 @@ class HrCalibration {
       windowStart = windowStart.add(_windowStep);
     }
 
-    final changed = bestResult == null
-        ? _latestResult != null
-        : _latestResult == null ||
-            (bestResult.baselineHeartRate - _latestResult!.baselineHeartRate)
-                    .abs() >
-                0.05 ||
-            (bestResult.triggerThreshold - _latestResult!.triggerThreshold)
-                    .abs() >
-                0.05;
-    if (changed) {
-      _latestResult = bestResult;
-      onResultUpdated?.call(bestResult);
+    // Only override the live partial result when a validated window is found.
+    if (bestResult != null) {
+      final changed = _latestResult == null ||
+          (bestResult.baselineHeartRate - _latestResult!.baselineHeartRate)
+                  .abs() >
+              0.05 ||
+          (bestResult.triggerThreshold - _latestResult!.triggerThreshold)
+                  .abs() >
+              0.05;
+      if (changed) {
+        _latestResult = bestResult;
+        onResultUpdated?.call(bestResult);
+      }
     }
   }
 

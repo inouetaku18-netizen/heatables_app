@@ -8,12 +8,10 @@ import 'package:open_earable_flutter/open_earable_flutter.dart';
 
 import 'package:flutter_platform_widgets/flutter_platform_widgets.dart';
 import 'package:open_wearable/apps/calmables/model/ppg_filter.dart';
-import 'package:open_wearable/apps/calmables/model/calmables_pwm.dart';
 import 'package:open_wearable/apps/calmables/model/sensor_data_logger.dart';
 import 'package:open_wearable/apps/calmables/model/hr_calibration.dart';
 import 'package:open_wearable/apps/calmables/widgets/rowling_chart.dart';
 import 'package:open_wearable/apps/calmables/widgets/rolling_hr_chart.dart';
-import 'package:open_wearable/apps/calmables/widgets/autopilot_page.dart';
 import 'package:open_wearable/apps/calmables/widgets/study_protocol_page.dart';
 import 'package:open_wearable/models/wearable_display_group.dart';
 import 'package:open_wearable/view_models/sensor_configuration_provider.dart';
@@ -67,10 +65,16 @@ class _CalmablesPageState extends State<CalmablesPage> {
   Stream<PpgOpticalSample>? _rawPpgStream;
   Stream<PpgMotionSample>? _rawImuStream;
 
+  // Manual baseline/trigger overrides
+  final TextEditingController _baselineController = TextEditingController();
+  final TextEditingController _triggerController = TextEditingController();
+
   Wearable? calmablesDevice;
 
-  // ESP32(Calmables)用スライダー値（0-255）
   int calmablesSliderValue = 0;
+  bool _manualPwmOn = false;
+  bool _autopilotActive = false;
+  VoidCallback? _sheetRefresh;
 
   double BoxWidth = 186;
   double BoxHeight = 90;
@@ -78,9 +82,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
   final String _characteristicUuid = "6bb7da44-e8b9-3e3f-6d5a-e212c378d2df";
   final String _serviceUuid = "a542957a-968b-91fa-254c-62c7a367a692";
 
-  //心拍数の平均の表示
   List<double> heartRateHistory = [];
-  List<double> hrvHistory = [];
   static const int maxHistoryLength = 5;
 
   @override
@@ -111,6 +113,8 @@ class _CalmablesPageState extends State<CalmablesPage> {
     }
     _calibration.stop();
     _calibrationUiTimer?.cancel();
+    _baselineController.dispose();
+    _triggerController.dispose();
     if (configProvider != null) {
       unawaited(configProvider.turnOffAllSensors());
     }
@@ -122,30 +126,38 @@ class _CalmablesPageState extends State<CalmablesPage> {
     if (_controlMode == mode) return;
     setState(() {
       _controlMode = mode;
-      calmablesSliderValue = 0;
+      _manualPwmOn = false;
+      _autopilotActive = false;
       pwmHistory.clear();
     });
     sendDataToCalmables([0]);
 
     if (mode == ControlMode.autopilot) {
-      // Autopilot画面へ遷移
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (context) => AutopilotPage(
-            heartRateStream: _heartRateStream,
-            initialPwmValue: calmablesSliderValue,
-          ),
-        ),
-      );
-      // Autopilot開始：心拍数ストリーム監視してPWM計算＆送信
+      // HR threshold-based control
       _heartRateSubscription = _heartRateStream?.listen((bpm) {
-        if (bpm != null && bpm.isFinite) {
-          final pwmValue = AutopilotController.pwmFromHeartRate(bpm);
-          sendDataToCalmables([pwmValue]);
-          _dataLogger.logMetrics(pwm: pwmValue);
+        if (bpm == null || !bpm.isFinite) return;
+        final result = _calibration.latestResult;
+        if (result == null) return;
+
+        final trigger = result.triggerThreshold;
+        final baseline = result.baselineHeartRate;
+        final deactivateThreshold = (trigger - baseline) * 0.2 + baseline;
+
+        final bool activate;
+        if (bpm > trigger) {
+          activate = true;
+        } else if (bpm < deactivateThreshold) {
+          activate = false;
+        } else {
+          return; // hysteresis zone – keep current state
+        }
+
+        if (activate != _autopilotActive) {
+          final pwm = activate ? calmablesSliderValue : 0;
+          sendDataToCalmables([pwm]);
           setState(() {
-            calmablesSliderValue = pwmValue;
-            pwmHistory.add(pwmValue);
+            _autopilotActive = activate;
+            pwmHistory.add(pwm);
             if (pwmHistory.length > pwmHistoryLength) {
               pwmHistory.removeAt(0);
             }
@@ -153,15 +165,14 @@ class _CalmablesPageState extends State<CalmablesPage> {
         }
       });
     } else {
-      // Manualモード時は心拍数購読解除
+      // Manual mode – cancel HR subscription
       _heartRateSubscription?.cancel();
       _heartRateSubscription = null;
     }
   }
 
-  // PWM履歴リストを追加
   List<int> pwmHistory = [];
-  static const int pwmHistoryLength = 50; // 表示用に長めに保持
+  static const int pwmHistoryLength = 50;
 
   Future<bool> sendDataToCalmables(List<int> data) async {
     final device = calmablesDevice;
@@ -200,7 +211,6 @@ class _CalmablesPageState extends State<CalmablesPage> {
     return true;
   }
 
-  /// Tries to find a Calmables wearable in the live WearablesProvider if the
   /// Tries to find a Calmables wearable in the live WearablesProvider.
   /// If not immediately available, waits up to [_kCalmablesSearchTimeout] for
   /// the auto-connector to establish the BLE connection, showing a loading
@@ -253,7 +263,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
           children: [
             CircularProgressIndicator(),
             SizedBox(width: 16),
-            Expanded(child: Text('Suche nach Calmables…')),
+            Expanded(child: Text('Searching for Calmables…')),
           ],
         ),
       ),
@@ -391,6 +401,11 @@ class _CalmablesPageState extends State<CalmablesPage> {
       _rawPpgStream = ppgStream;
       _rawImuStream = accelerometerMotionStream;
     });
+
+    // Show live partial results during calibration.
+    _calibration.onResultUpdated = (_) {
+      if (mounted) setState(() {});
+    };
   }
 
   double _configureSensorForStreaming(
@@ -607,12 +622,12 @@ class _CalmablesPageState extends State<CalmablesPage> {
     final useProtocol = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Aufnahme starten'),
-        content: const Text('Mit Studienprotokoll aufnehmen?'),
+        title: const Text('Start Recording'),
+        content: const Text('Record with study protocol?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Nein – Standard'),
+            child: const Text('No – Standard'),
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),
@@ -620,7 +635,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
               backgroundColor: const Color(0xFF009682),
               foregroundColor: Colors.white,
             ),
-            child: const Text('Ja – Mit Protokoll'),
+            child: const Text('Yes – With Protocol'),
           ),
         ],
       ),
@@ -659,206 +674,254 @@ class _CalmablesPageState extends State<CalmablesPage> {
     }
   }
 
-  Widget _buildLoggingCard(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.save_rounded,
-                  size: 18,
-                  color: _dataLogger.isLogging
-                      ? Colors.red
-                      : const Color(0xFF009682),
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  'Data Logging',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                ),
-              ],
+  Widget _buildModeTab(BuildContext context, String label, ControlMode mode) {
+    final active = _controlMode == mode;
+    final isHrMode = mode == ControlMode.autopilot;
+    final hasCalibration = _calibration.latestResult != null;
+    final disabled = isHrMode && !hasCalibration;
+    return Expanded(
+      child: GestureDetector(
+        onTap: disabled ? null : () => _onModeChanged(mode),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            color: active ? const Color(0xFF009682) : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            label,
+            style: TextStyle(
+              color: disabled
+                  ? Colors.grey.shade400
+                  : (active ? Colors.white : Colors.grey.shade700),
+              fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+              fontSize: 13,
             ),
-            const SizedBox(height: 8),
-            if (_dataLogger.isLogging)
-              Text(
-                'Recording… PPG: ${_dataLogger.ppgSampleCount}, '
-                'IMU: ${_dataLogger.imuSampleCount}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: _dataLogger.isLogging
-                        ? null
-                        : _onStartRecordingPressed,
-                    icon: const Icon(Icons.fiber_manual_record, size: 16),
-                    label: const Text('Start'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: _dataLogger.isLogging
-                          ? Colors.grey.shade300
-                          : const Color(0xFF009682),
-                      foregroundColor:
-                          _dataLogger.isLogging ? Colors.black54 : Colors.white,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: _dataLogger.isLogging
-                        ? () async {
-                            await _dataLogger.stopAndShare();
-                            if (mounted) setState(() {});
-                          }
-                        : null,
-                    icon: const Icon(Icons.stop, size: 16),
-                    label: const Text('Stop & Share'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: _dataLogger.isLogging
-                          ? Colors.red
-                          : Colors.grey.shade300,
-                      foregroundColor:
-                          _dataLogger.isLogging ? Colors.white : Colors.black54,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildCalibrationCard(BuildContext context) {
-    final result = _calibration.latestResult;
-    final isCalibrating = _calibration.isCalibrating;
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.tune_rounded,
-                  size: 18,
-                  color:
-                      isCalibrating ? Colors.orange : const Color(0xFF009682),
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  'HR Calibration',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            if (isCalibrating) ...[
-              LinearProgressIndicator(
-                value: _calibration.progressFraction,
-                backgroundColor: Colors.grey.shade200,
-                valueColor: const AlwaysStoppedAnimation<Color>(
-                  Color(0xFF009682),
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                '${_calibration.elapsedSeconds.toStringAsFixed(0)}s / '
-                '${HrCalibration.calibrationDuration.inSeconds}s',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 8),
-            ],
-            Row(
-              children: [
-                Expanded(
-                  child: _MetricCard(
-                    title: 'Baseline',
-                    icon: Icons.horizontal_rule_rounded,
-                    value: result != null
-                        ? result.baselineHeartRate.toStringAsFixed(1)
-                        : '-',
-                    unit: 'BPM',
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _MetricCard(
-                    title: 'Trigger',
-                    icon: Icons.arrow_upward_rounded,
-                    value: result != null
-                        ? result.triggerThreshold.toStringAsFixed(1)
-                        : '-',
-                    unit: 'BPM',
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: isCalibrating
-                    ? () {
-                        _calibration.stop();
-                        _calibrationUiTimer?.cancel();
-                        _calibrationUiTimer = null;
-                        setState(() {});
-                      }
-                    : () {
-                        final hrStream = _heartRateStream;
-                        final qualityStream = _signalQualityStream;
-                        if (hrStream == null || qualityStream == null) return;
-                        _calibration.onResultUpdated = (_) {
-                          if (mounted) setState(() {});
-                        };
-                        _calibration.onCalibrationFinished = () {
-                          _calibrationUiTimer?.cancel();
-                          _calibrationUiTimer = null;
-                          if (mounted) setState(() {});
-                        };
-                        _calibration.start(
-                          heartRateStream: hrStream,
-                          signalQualityStream: qualityStream,
-                        );
-                        _calibrationUiTimer?.cancel();
-                        _calibrationUiTimer = Timer.periodic(
-                          const Duration(milliseconds: 500),
-                          (_) {
-                            if (mounted) setState(() {});
-                          },
-                        );
-                        setState(() {});
-                      },
-                icon: Icon(
-                  isCalibrating ? Icons.stop : Icons.play_arrow,
-                  size: 16,
-                ),
-                label: Text(isCalibrating ? 'Stop' : 'Calibrate'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor:
-                      isCalibrating ? Colors.orange : const Color(0xFF009682),
-                  foregroundColor: Colors.white,
-                ),
-              ),
-            ),
-          ],
-        ),
+  void _openCalibrationSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-    );
+      builder: (sheetCtx) => StatefulBuilder(
+        builder: (_, setSheetState) {
+          _sheetRefresh = () => setSheetState(() {});
+          _calibration.onResultUpdated = (_) {
+            if (mounted) setState(() {});
+            _sheetRefresh?.call();
+          };
+
+          final result = _calibration.latestResult;
+          final isCalibrating = _calibration.isCalibrating;
+
+          return Padding(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(sheetCtx).viewInsets.bottom + 24,
+              left: 20,
+              right: 20,
+              top: 16,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Icon(
+                      Icons.tune_rounded,
+                      size: 20,
+                      color: isCalibrating
+                          ? Colors.orange
+                          : const Color(0xFF009682),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Calibration',
+                      style: Theme.of(sheetCtx)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                if (isCalibrating) ...[
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      value: _calibration.progressFraction,
+                      minHeight: 6,
+                      backgroundColor: Colors.grey.shade200,
+                      valueColor: const AlwaysStoppedAnimation<Color>(
+                          Color(0xFF009682)),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '${_calibration.elapsedSeconds.toStringAsFixed(0)} / '
+                    '${HrCalibration.calibrationDuration.inSeconds} s',
+                    style: Theme.of(sheetCtx)
+                        .textTheme
+                        .bodySmall
+                        ?.copyWith(color: Colors.grey.shade600),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+                Row(
+                  children: [
+                    Expanded(
+                      child: _EditableMetricField(
+                        label: 'Baseline (BPM)',
+                        controller: _baselineController,
+                        hintValue: result != null
+                            ? result.baselineHeartRate.toStringAsFixed(1)
+                            : '--',
+                        onSubmitted: (val) {
+                          final parsed = double.tryParse(val);
+                          if (parsed != null) {
+                            final r = _calibration.latestResult;
+                            if (r != null) {
+                              r.baselineHeartRate = parsed;
+                            } else {
+                              _calibration.setManualResult(
+                                baseline: parsed,
+                                trigger:
+                                    double.tryParse(_triggerController.text) ??
+                                        parsed + 10,
+                              );
+                            }
+                            setSheetState(() {});
+                            setState(() {});
+                          }
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _EditableMetricField(
+                        label: 'Trigger (BPM)',
+                        controller: _triggerController,
+                        hintValue: result != null
+                            ? result.triggerThreshold.toStringAsFixed(1)
+                            : '--',
+                        onSubmitted: (val) {
+                          final parsed = double.tryParse(val);
+                          if (parsed != null) {
+                            final r = _calibration.latestResult;
+                            if (r != null) {
+                              r.triggerThreshold = parsed;
+                            } else {
+                              _calibration.setManualResult(
+                                baseline:
+                                    double.tryParse(_baselineController.text) ??
+                                        parsed - 10,
+                                trigger: parsed,
+                              );
+                            }
+                            setSheetState(() {});
+                            setState(() {});
+                          }
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton.icon(
+                    onPressed: isCalibrating
+                        ? () {
+                            _calibration.stop();
+                            _calibrationUiTimer?.cancel();
+                            _calibrationUiTimer = null;
+                            setSheetState(() {});
+                            setState(() {});
+                          }
+                        : () {
+                            final hrStream = _heartRateStream;
+                            final qualityStream = _signalQualityStream;
+                            if (hrStream == null || qualityStream == null) {
+                              return;
+                            }
+                            _calibration.onResultUpdated = (_) {
+                              if (mounted) setState(() {});
+                              _sheetRefresh?.call();
+                            };
+                            _calibration.onCalibrationFinished = () {
+                              _calibrationUiTimer?.cancel();
+                              _calibrationUiTimer = null;
+                              if (mounted) setState(() {});
+                              _sheetRefresh?.call();
+                            };
+                            _calibration.start(
+                              heartRateStream: hrStream,
+                              signalQualityStream: qualityStream,
+                            );
+                            _calibrationUiTimer?.cancel();
+                            _calibrationUiTimer = Timer.periodic(
+                              const Duration(milliseconds: 500),
+                              (_) {
+                                if (mounted) setState(() {});
+                                _sheetRefresh?.call();
+                              },
+                            );
+                            setSheetState(() {});
+                          },
+                    icon: Icon(
+                      isCalibrating
+                          ? Icons.stop_rounded
+                          : Icons.play_arrow_rounded,
+                      size: 18,
+                    ),
+                    label: Text(
+                      isCalibrating ? 'Stop' : 'Start Calibration',
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: isCalibrating
+                          ? Colors.orange
+                          : const Color(0xFF009682),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    ).whenComplete(() {
+      _sheetRefresh = null;
+      _calibration.onResultUpdated = (_) {
+        if (mounted) setState(() {});
+      };
+    });
   }
 
   @override
@@ -903,102 +966,88 @@ class _CalmablesPageState extends State<CalmablesPage> {
     Stream<PpgSignalQuality> signalQualityStream,
   ) {
     return ListView(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 20),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
       children: [
-        DeviceRow(
-          group: WearableDisplayGroup.single(wearable: widget.wearable),
-        ),
-        const SizedBox(height: 12),
         StreamBuilder<PpgSignalQuality>(
           stream: signalQualityStream,
+          initialData: PpgSignalQuality.unavailable,
           builder: (context, qualitySnapshot) {
             final quality =
                 qualitySnapshot.data ?? PpgSignalQuality.unavailable;
-            final isEquipmentOn = quality != PpgSignalQuality.unavailable;
-            return StreamBuilder<PpgSignalQuality>(
-              stream: signalQualityStream,
-              initialData: PpgSignalQuality.unavailable,
-              builder: (context, qualitySnapshot) {
-                final quality =
-                    qualitySnapshot.data ?? PpgSignalQuality.unavailable;
-                return Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // 体温表示（既存の_MetricCardを利用）
-                    SizedBox(
-                      width: BoxWidth,
-                      height: BoxHeight,
-                      child: _MetricCard(
-                        title: 'Equipment',
-                        icon: Icons.power_settings_new_rounded,
-                        value: isEquipmentOn ? 'ON' : 'OFF',
-                        unit: '',
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    // 信号品質表示に_SignalQualityCardを利用
-                    SizedBox(
-                      width: BoxWidth,
-                      height: BoxHeight,
-                      child: _SignalQualityCard(quality: quality),
-                    ),
-                  ],
-                );
-              },
-            );
-          },
-        ),
-        const SizedBox(height: 12),
-        StreamBuilder<double?>(
-          stream: heartRateStream,
-          builder: (context, snapshot) {
-            final bpm = snapshot.data;
-            if (bpm != null && bpm.isFinite) {
-              heartRateHistory.add(bpm);
-              if (heartRateHistory.length > maxHistoryLength) {
-                heartRateHistory.removeAt(0);
-              }
-            }
-
             return StreamBuilder<double?>(
-              stream: hrvLfhfStream,
-              builder: (context, hrvSnapshot) {
-                final hrv = hrvSnapshot.data;
-                if (hrv != null && hrv.isFinite) {
-                  hrvHistory.add(hrv);
-                  if (hrvHistory.length > maxHistoryLength) {
-                    hrvHistory.removeAt(0);
+              stream: heartRateStream,
+              builder: (context, hrSnapshot) {
+                final bpm = hrSnapshot.data;
+                if (bpm != null && bpm.isFinite) {
+                  heartRateHistory.add(bpm);
+                  if (heartRateHistory.length > maxHistoryLength) {
+                    heartRateHistory.removeAt(0);
                   }
                 }
-                final avgHrv = hrvHistory.isNotEmpty
-                    ? (hrvHistory.reduce((a, b) => a + b) / hrvHistory.length)
-                    : null;
-
-                return Row(
+                return Column(
                   children: [
-                    SizedBox(
-                      width: BoxWidth,
-                      height: BoxHeight,
-                      child: _MetricCard(
-                        title: 'Heart Rate',
-                        icon: Icons.favorite_rounded,
-                        value: bpm != null && bpm.isFinite
-                            ? bpm.toStringAsFixed(0)
-                            : '--',
-                        unit: 'BPM',
-                      ),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: SizedBox(
+                            height: BoxHeight,
+                            child: _SignalQualityCard(quality: quality),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: SizedBox(
+                            height: BoxHeight,
+                            child: _MetricCard(
+                              title: 'Heart Rate',
+                              icon: Icons.favorite_rounded,
+                              value: bpm != null && bpm.isFinite
+                                  ? bpm.toStringAsFixed(0)
+                                  : '--',
+                              unit: 'BPM',
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 12),
-                    SizedBox(
-                      width: BoxWidth,
-                      height: BoxHeight,
-                      child: _MetricCard(
-                        title: 'LF/HF Ratio',
-                        icon: Icons.bar_chart_rounded,
-                        value:
-                            avgHrv != null ? avgHrv.toStringAsFixed(1) : '--',
-                        unit: '',
-                      ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: SizedBox(
+                            height: BoxHeight,
+                            child: _MetricCard(
+                              title: 'Baseline',
+                              icon: Icons.horizontal_rule_rounded,
+                              value: _calibration.latestResult != null
+                                  ? _calibration
+                                      .latestResult!.baselineHeartRate
+                                      .toStringAsFixed(1)
+                                  : '--',
+                              unit: 'BPM',
+                              onTap: _openCalibrationSheet,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: SizedBox(
+                            height: BoxHeight,
+                            child: _MetricCard(
+                              title: 'Trigger',
+                              icon: Icons.arrow_upward_rounded,
+                              value: _calibration.latestResult != null
+                                  ? _calibration
+                                      .latestResult!.triggerThreshold
+                                      .toStringAsFixed(1)
+                                  : '--',
+                              unit: 'BPM',
+                              onTap: _openCalibrationSheet,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 );
@@ -1006,10 +1055,10 @@ class _CalmablesPageState extends State<CalmablesPage> {
             );
           },
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 14),
         _SignalPanelCard(
-          title: 'PPG mit Motion Compensation (0.5–8 Hz)',
-          subtitle: 'Suppressor + NLMS aktiv',
+          title: 'PPG Signal',
+          subtitle: '',
           icon: Icons.show_chart_rounded,
           chartStream: displayPpgSignalStream,
           peakTimestampsStream: _peakTimestampsStream,
@@ -1017,11 +1066,11 @@ class _CalmablesPageState extends State<CalmablesPage> {
           fixedMeasureMin: null,
           fixedMeasureMax: null,
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 14),
         if (_rawHrChartStream != null && _smoothedHrChartStream != null)
           Card(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+              padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -1032,22 +1081,15 @@ class _CalmablesPageState extends State<CalmablesPage> {
                         size: 18,
                         color: Color(0xFF009682),
                       ),
-                      const SizedBox(width: 6),
+                      const SizedBox(width: 8),
                       Text(
                         'Heart Rate (60s)',
                         style: Theme.of(context)
                             .textTheme
-                            .titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w700),
+                            .titleSmall
+                            ?.copyWith(fontWeight: FontWeight.w600),
                       ),
                     ],
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Grau: RR-Intervall HR · Rot: Kalman-gefiltert',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: const Color(0xFF009682),
-                        ),
                   ),
                   const SizedBox(height: 10),
                   SizedBox(
@@ -1064,83 +1106,425 @@ class _CalmablesPageState extends State<CalmablesPage> {
             ),
           ),
 
-        //_buildScanSection(),
-        const SizedBox(height: 12),
-        _buildLoggingCard(context),
-        const SizedBox(height: 12),
-        _buildCalibrationCard(context),
-        const SizedBox(height: 24), // 少し余白
+        const SizedBox(height: 14),
         Card(
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16)),
           child: Padding(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Calmables Control',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                ),
                 Row(
                   children: [
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: () => _onModeChanged(ControlMode.manual),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: _controlMode == ControlMode.manual
-                              ? Color(0xFF009682)
-                              : Colors.grey.shade300,
-                          foregroundColor: _controlMode == ControlMode.manual
-                              ? Colors.white
-                              : Colors.black87,
-                        ),
-                        child: const Text('Manual'),
-                      ),
+                    const Icon(
+                      Icons.tune_rounded,
+                      size: 18,
+                      color: Color(0xFF009682),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: () => _onModeChanged(ControlMode.autopilot),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: _controlMode == ControlMode.autopilot
-                              ? Color(0xFF009682)
-                              : Colors.grey.shade300,
-                          foregroundColor: _controlMode == ControlMode.autopilot
-                              ? Colors.white
-                              : Colors.black87,
-                        ),
-                        child: const Text('HR-based'),
-                      ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Control',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 12),
-                if (_controlMode == ControlMode.manual) ...[
-                  Slider(
-                    value: calmablesSliderValue.toDouble(),
-                    min: 0,
-                    max: 255,
-                    divisions: 255,
-                    label: calmablesSliderValue.toString(),
-                    activeColor: const Color.fromARGB(255, 0, 150, 130),
-                    thumbColor: const Color.fromARGB(255, 0, 150, 130),
-                    onChanged: (double value) {
-                      setState(() {
-                        calmablesSliderValue = value.round();
-                      });
-                      sendDataToCalmables([calmablesSliderValue]);
-                      _dataLogger.logMetrics(pwm: calmablesSliderValue);
-                    },
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(10),
                   ),
-                  Text('Value: $calmablesSliderValue'),
+                  padding: const EdgeInsets.all(3),
+                  child: Row(
+                    children: [
+                      _buildModeTab(context, 'Manual', ControlMode.manual),
+                      _buildModeTab(
+                          context, 'HR-based', ControlMode.autopilot),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+                if (_controlMode == ControlMode.manual) ...[
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Heat Output',
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium
+                            ?.copyWith(fontWeight: FontWeight.w500),
+                      ),
+                      Row(
+                        children: [
+                          Text(
+                            _manualPwmOn ? 'ON' : 'OFF',
+                            style: TextStyle(
+                              color: _manualPwmOn
+                                  ? const Color(0xFF009682)
+                                  : Colors.grey.shade400,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Switch(
+                            value: _manualPwmOn,
+                            activeColor: const Color(0xFF009682),
+                            activeTrackColor:
+                                const Color(0xFF009682).withOpacity(0.3),
+                            trackOutlineColor:
+                                WidgetStateProperty.resolveWith(
+                              (states) =>
+                                  states.contains(WidgetState.selected)
+                                      ? const Color(0xFF009682)
+                                      : Colors.grey.shade300,
+                            ),
+                            onChanged: (v) {
+                              setState(() => _manualPwmOn = v);
+                              sendDataToCalmables(
+                                  [v ? calmablesSliderValue : 0]);
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Intensity',
+                        style: Theme.of(context)
+                            .textTheme
+                            .labelSmall
+                            ?.copyWith(color: Colors.grey.shade600),
+                      ),
+                      Text(
+                        _warmthLabel(calmablesSliderValue),
+                        style: Theme.of(context)
+                            .textTheme
+                            .labelMedium
+                            ?.copyWith(
+                              color: _pwmColor(calmablesSliderValue),
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
+                    ],
+                  ),
+                  SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      trackHeight: 4.0,
+                      trackShape: const _GradientSliderTrackShape(),
+                      thumbColor: _pwmColor(calmablesSliderValue),
+                      activeTrackColor: Colors.transparent,
+                      inactiveTrackColor: Colors.transparent,
+                      overlayColor:
+                          _pwmColor(calmablesSliderValue).withOpacity(0.2),
+                      showValueIndicator: ShowValueIndicator.onlyForDiscrete,
+                      valueIndicatorColor: Colors.grey.shade700,
+                      valueIndicatorTextStyle: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
+                      ),
+                    ),
+                    child: Slider(
+                      value: calmablesSliderValue.toDouble(),
+                      min: 0,
+                      max: 255,
+                      divisions: 255,
+                      label: calmablesSliderValue.toString(),
+                      onChanged: (double value) {
+                        setState(() {
+                          calmablesSliderValue = value.round();
+                        });
+                        if (_manualPwmOn) {
+                          sendDataToCalmables([calmablesSliderValue]);
+                        }
+                        _dataLogger.logMetrics(pwm: calmablesSliderValue);
+                      },
+                    ),
+                  ),
                 ] else ...[
-                  Text('Autopilot mode active. PWM controlled by heart rate.'),
-                  Text('Current PWM: $calmablesSliderValue'),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Heat Output',
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium
+                            ?.copyWith(fontWeight: FontWeight.w500),
+                      ),
+                      Row(
+                        children: [
+                          AnimatedDefaultTextStyle(
+                            duration: const Duration(milliseconds: 300),
+                            style: TextStyle(
+                              color: _autopilotActive
+                                  ? const Color(0xFFFFB300)
+                                  : Colors.grey.shade400,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13,
+                            ),
+                            child: Text(
+                                _autopilotActive ? 'ACTIVE' : 'INACTIVE'),
+                          ),
+                          const SizedBox(width: 10),
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 400),
+                            width: 20,
+                            height: 20,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: _autopilotActive
+                                  ? const Color(0xFFFFB300)
+                                  : Colors.grey.shade300,
+                              boxShadow: _autopilotActive
+                                  ? [
+                                      BoxShadow(
+                                        color: const Color(0xFFFFB300)
+                                            .withOpacity(0.7),
+                                        blurRadius: 8,
+                                        spreadRadius: 2,
+                                      )
+                                    ]
+                                  : null,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Intensity',
+                        style: Theme.of(context)
+                            .textTheme
+                            .labelSmall
+                            ?.copyWith(color: Colors.grey.shade600),
+                      ),
+                      Text(
+                        _warmthLabel(calmablesSliderValue),
+                        style: Theme.of(context)
+                            .textTheme
+                            .labelMedium
+                            ?.copyWith(
+                              color: _pwmColor(calmablesSliderValue),
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
+                    ],
+                  ),
+                  SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      trackHeight: 4.0,
+                      trackShape: const _GradientSliderTrackShape(),
+                      thumbColor: _pwmColor(calmablesSliderValue),
+                      activeTrackColor: Colors.transparent,
+                      inactiveTrackColor: Colors.transparent,
+                      overlayColor:
+                          _pwmColor(calmablesSliderValue).withOpacity(0.2),
+                      showValueIndicator: ShowValueIndicator.onlyForDiscrete,
+                      valueIndicatorColor: Colors.grey.shade700,
+                      valueIndicatorTextStyle: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 12,
+                      ),
+                    ),
+                    child: Slider(
+                      value: calmablesSliderValue.toDouble(),
+                      min: 0,
+                      max: 255,
+                      divisions: 255,
+                      label: calmablesSliderValue.toString(),
+                      onChanged: (double value) {
+                        setState(() {
+                          calmablesSliderValue = value.round();
+                        });
+                        if (_autopilotActive) {
+                          sendDataToCalmables([calmablesSliderValue]);
+                        }
+                      },
+                    ),
+                  ),
                 ],
               ],
             ),
           ),
+        ),
+        const SizedBox(height: 12),
+        DeviceRow(
+          group: WearableDisplayGroup.single(wearable: widget.wearable),
+        ),
+      ],
+    );
+  }
+}
+
+// ── Colour helpers ─────────────────────────────────────────────────
+
+Color _pwmColor(int pwm) {
+  final t = (pwm / 255.0).clamp(0.0, 1.0);
+  if (t <= 0.33) {
+    return Color.lerp(
+      const Color(0xFF2196F3), // blue
+      const Color(0xFF4CAF50), // green
+      t / 0.33,
+    )!;
+  }
+  if (t <= 0.66) {
+    return Color.lerp(
+      const Color(0xFF4CAF50), // green
+      const Color(0xFFFF9800), // orange
+      (t - 0.33) / 0.33,
+    )!;
+  }
+  return Color.lerp(
+    const Color(0xFFFF9800), // orange
+    const Color(0xFFF44336), // red
+    (t - 0.66) / 0.34,
+  )!;
+}
+
+String _warmthLabel(int pwm) {
+  if (pwm == 0) return 'Off';
+  if (pwm < 85) return 'Low Intensity';
+  if (pwm < 170) return 'Medium Intensity';
+  return 'High Intensity';
+}
+
+// ── Gradient slider track ───────────────────────────────────────────────────
+
+class _GradientSliderTrackShape extends SliderTrackShape
+    with BaseSliderTrackShape {
+  const _GradientSliderTrackShape();
+
+  static const _gradientColors = [
+    Color(0xFF2196F3), // blue
+    Color(0xFF4CAF50), // green
+    Color(0xFFFF9800), // orange
+    Color(0xFFF44336), // red
+  ];
+
+  @override
+  Rect getPreferredRect({
+    required RenderBox parentBox,
+    Offset offset = Offset.zero,
+    required SliderThemeData sliderTheme,
+    bool isEnabled = false,
+    bool isDiscrete = false,
+  }) {
+    const trackHeight = 4.0;
+    final thumbWidth =
+        (sliderTheme.thumbShape ?? const RoundSliderThumbShape())
+            .getPreferredSize(isEnabled, isDiscrete)
+            .width;
+    final trackLeft = offset.dx + thumbWidth / 2;
+    final trackTop = offset.dy + (parentBox.size.height - trackHeight) / 2;
+    final trackRight = trackLeft + parentBox.size.width - thumbWidth;
+    return Rect.fromLTRB(
+        trackLeft, trackTop, trackRight, trackTop + trackHeight);
+  }
+
+  @override
+  void paint(
+    PaintingContext context,
+    Offset offset, {
+    required RenderBox parentBox,
+    required SliderThemeData sliderTheme,
+    required Animation<double> enableAnimation,
+    required TextDirection textDirection,
+    required Offset thumbCenter,
+    Offset? secondaryOffset,
+    bool isEnabled = false,
+    bool isDiscrete = false,
+    double additionalActiveTrackHeight = 2,
+  }) {
+    final trackRect = getPreferredRect(
+      parentBox: parentBox,
+      offset: offset,
+      sliderTheme: sliderTheme,
+      isEnabled: isEnabled,
+      isDiscrete: isDiscrete,
+    );
+    const radius = Radius.circular(4);
+    final clampedThumb =
+        thumbCenter.dx.clamp(trackRect.left, trackRect.right);
+
+    // Full gray background track (always visible)
+    context.canvas.drawRRect(
+      RRect.fromRectAndRadius(trackRect, radius),
+      Paint()..color = Colors.grey.shade300,
+    );
+
+    // Active (left) portion – gradient overlay
+    if (clampedThumb > trackRect.left) {
+      final activeRect = Rect.fromLTRB(
+        trackRect.left,
+        trackRect.top - additionalActiveTrackHeight / 2,
+        clampedThumb,
+        trackRect.bottom + additionalActiveTrackHeight / 2,
+      );
+      context.canvas.drawRRect(
+        RRect.fromRectAndRadius(activeRect, radius),
+        Paint()
+          ..shader = const LinearGradient(colors: _gradientColors)
+              .createShader(trackRect),
+      );
+    }
+  }
+}
+
+// ── Editable metric field ───────────────────────────────────────────────────
+
+class _EditableMetricField extends StatelessWidget {
+  final String label;
+  final TextEditingController controller;
+  final String hintValue;
+  final ValueChanged<String> onSubmitted;
+
+  const _EditableMetricField({
+    required this.label,
+    required this.controller,
+    required this.hintValue,
+    required this.onSubmitted,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: Theme.of(context).textTheme.labelMedium,
+        ),
+        const SizedBox(height: 4),
+        TextField(
+          controller: controller,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: InputDecoration(
+            hintText: hintValue,
+            isDense: true,
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            border: const OutlineInputBorder(),
+          ),
+          onSubmitted: onSubmitted,
+          onEditingComplete: () {
+            onSubmitted(controller.text);
+            FocusScope.of(context).unfocus();
+          },
         ),
       ],
     );
@@ -1152,61 +1536,76 @@ class _MetricCard extends StatelessWidget {
   final IconData icon;
   final String value;
   final String unit;
+  final VoidCallback? onTap;
 
   const _MetricCard({
     required this.title,
     required this.icon,
     required this.value,
     required this.unit,
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
     return Card(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  icon,
-                  size: 18,
-                  color: Color(0xFF009682),
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  title,
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(
-                  value,
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                ),
-                const SizedBox(width: 4),
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 3),
-                  child: Text(
-                    unit,
-                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                          color: Colors.black,
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    icon,
+                    size: 16,
+                    color: const Color(0xFF009682),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                  ),
+                  if (onTap != null)
+                    Icon(
+                      Icons.edit_rounded,
+                      size: 13,
+                      color: Colors.grey.shade400,
+                    ),
+                ],
+              ),
+              const Spacer(),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    value,
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
                         ),
                   ),
-                ),
-              ],
-            ),
-          ],
+                  const SizedBox(width: 3),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 3),
+                    child: Text(
+                      unit,
+                      style:
+                          Theme.of(context).textTheme.labelMedium?.copyWith(
+                                color: Colors.grey.shade600,
+                              ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -1238,7 +1637,7 @@ class _SignalPanelCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+        padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1247,24 +1646,25 @@ class _SignalPanelCard extends StatelessWidget {
                 Icon(
                   icon,
                   size: 18,
-                  color: Color(0xFF009682),
+                  color: const Color(0xFF009682),
                 ),
-                const SizedBox(width: 6),
+                const SizedBox(width: 8),
                 Text(
                   title,
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
                       ),
                 ),
               ],
             ),
-            const SizedBox(height: 4),
-            Text(
-              subtitle,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Color(0xFF009682),
-                  ),
-            ),
+            if (subtitle.isNotEmpty) ...[              const SizedBox(height: 4),
+              Text(
+                subtitle,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Color(0xFF009682),
+                    ),
+              ),
+            ],
             const SizedBox(height: 10),
             SizedBox(
               height: 88,
@@ -1299,7 +1699,7 @@ class _SignalQualityCard extends StatelessWidget {
     final (label, hint, icon, color) = _presentQuality(colorScheme);
     return Card(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+        padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1313,11 +1713,11 @@ class _SignalQualityCard extends StatelessWidget {
                       size: 18,
                       color: color,
                     ),
-                    const SizedBox(width: 6),
+                    const SizedBox(width: 8),
                     Text(
                       'PPG',
                       style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w700,
+                            fontWeight: FontWeight.w600,
                           ),
                     ),
                   ],
