@@ -5,7 +5,7 @@ const EdgeInsets calmablesCardPadding = EdgeInsets.fromLTRB(16, 16, 16, 14);
 const EdgeInsets calmablesCompactCardPadding =
     EdgeInsets.fromLTRB(16, 14, 16, 14);
 const EdgeInsets calmablesSmallCardPadding =
-    EdgeInsets.fromLTRB(14, 12, 14, 12);
+    EdgeInsets.fromLTRB(12, 10, 12, 10);
 
 class CalmablesCardShell extends StatelessWidget {
   final Widget child;

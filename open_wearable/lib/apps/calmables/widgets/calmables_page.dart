@@ -78,7 +78,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
   VoidCallback? _sheetRefresh;
 
   double BoxWidth = 186;
-  double BoxHeight = 120;
+  double BoxHeight = 100;
 
   final String _characteristicUuid = "6bb7da44-e8b9-3e3f-6d5a-e212c378d2df";
   final String _serviceUuid = "a542957a-968b-91fa-254c-62c7a367a692";
@@ -1518,7 +1518,7 @@ class _MetricCard extends StatelessWidget {
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 6),
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
@@ -1627,7 +1627,9 @@ class _SignalQualityCard extends StatelessWidget {
               label: label,
               color: color,
               dense: true,
-              textStyle: Theme.of(context).textTheme.labelMedium,
+              textStyle: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontSize: 18,
+                  ),
             ),
           ),
         ],

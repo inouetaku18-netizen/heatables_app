@@ -1186,6 +1186,10 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
                           label: label,
                           color: color,
                           dense: true,
+                          textStyle:
+                              Theme.of(ctx).textTheme.titleSmall?.copyWith(
+                                    fontSize: 18,
+                                  ),
                         ),
                       ],
                     ),
