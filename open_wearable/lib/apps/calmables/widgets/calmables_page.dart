@@ -10,6 +10,7 @@ import 'package:flutter_platform_widgets/flutter_platform_widgets.dart';
 import 'package:open_wearable/apps/calmables/model/ppg_filter.dart';
 import 'package:open_wearable/apps/calmables/model/sensor_data_logger.dart';
 import 'package:open_wearable/apps/calmables/model/hr_calibration.dart';
+import 'package:open_wearable/apps/calmables/widgets/calmables_card_styles.dart';
 import 'package:open_wearable/apps/calmables/widgets/rowling_chart.dart';
 import 'package:open_wearable/apps/calmables/widgets/rolling_hr_chart.dart';
 import 'package:open_wearable/apps/calmables/widgets/study_protocol_page.dart';
@@ -77,7 +78,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
   VoidCallback? _sheetRefresh;
 
   double BoxWidth = 186;
-  double BoxHeight = 90;
+  double BoxHeight = 120;
 
   final String _characteristicUuid = "6bb7da44-e8b9-3e3f-6d5a-e212c378d2df";
   final String _serviceUuid = "a542957a-968b-91fa-254c-62c7a367a692";
@@ -224,10 +225,11 @@ class _CalmablesPageState extends State<CalmablesPage> {
 
     final provider = Provider.of<WearablesProvider>(context, listen: false);
 
-    Wearable? _findInProvider() => provider.wearables.cast<Wearable?>().firstWhere(
-          (w) => w!.name.toLowerCase().contains('calmables'),
-          orElse: () => null,
-        );
+    Wearable? _findInProvider() =>
+        provider.wearables.cast<Wearable?>().firstWhere(
+              (w) => w!.name.toLowerCase().contains('calmables'),
+              orElse: () => null,
+            );
 
     // Fast path: already in provider list
     final existing = _findInProvider();
@@ -1021,8 +1023,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
                               title: 'Baseline',
                               icon: Icons.horizontal_rule_rounded,
                               value: _calibration.latestResult != null
-                                  ? _calibration
-                                      .latestResult!.baselineHeartRate
+                                  ? _calibration.latestResult!.baselineHeartRate
                                       .toStringAsFixed(1)
                                   : '--',
                               unit: 'BPM',
@@ -1038,8 +1039,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
                               title: 'Trigger',
                               icon: Icons.arrow_upward_rounded,
                               value: _calibration.latestResult != null
-                                  ? _calibration
-                                      .latestResult!.triggerThreshold
+                                  ? _calibration.latestResult!.triggerThreshold
                                       .toStringAsFixed(1)
                                   : '--',
                               unit: 'BPM',
@@ -1068,298 +1068,253 @@ class _CalmablesPageState extends State<CalmablesPage> {
         ),
         const SizedBox(height: 14),
         if (_rawHrChartStream != null && _smoothedHrChartStream != null)
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(
-                        Icons.favorite_rounded,
-                        size: 18,
-                        color: Color(0xFF009682),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        'Heart Rate (60s)',
-                        style: Theme.of(context)
-                            .textTheme
-                            .titleSmall
-                            ?.copyWith(fontWeight: FontWeight.w600),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  SizedBox(
-                    height: 120,
-                    child: RollingHrChart(
-                      rawHrStream: _rawHrChartStream!,
-                      smoothedHrStream: _smoothedHrChartStream!,
-                      timestampExponent: widget.ppgSensor.timestampExponent,
-                      timeWindow: 60,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-        const SizedBox(height: 14),
-        Card(
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16)),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+          CalmablesCardShell(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
+                const CalmablesCardHeader(
+                  icon: Icons.favorite_rounded,
+                  title: 'Heart Rate (60s)',
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  height: 120,
+                  child: RollingHrChart(
+                    rawHrStream: _rawHrChartStream!,
+                    smoothedHrStream: _smoothedHrChartStream!,
+                    timestampExponent: widget.ppgSensor.timestampExponent,
+                    timeWindow: 60,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        const SizedBox(height: 14),
+        CalmablesCardShell(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const CalmablesCardHeader(
+                icon: Icons.tune_rounded,
+                title: 'Control',
+              ),
+              const SizedBox(height: 12),
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                padding: const EdgeInsets.all(3),
+                child: Row(
                   children: [
-                    const Icon(
-                      Icons.tune_rounded,
-                      size: 18,
-                      color: Color(0xFF009682),
-                    ),
-                    const SizedBox(width: 8),
+                    _buildModeTab(context, 'Manual', ControlMode.manual),
+                    _buildModeTab(context, 'HR-based', ControlMode.autopilot),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+              if (_controlMode == ControlMode.manual) ...[
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
                     Text(
-                      'Control',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      'Heat Output',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyMedium
+                          ?.copyWith(fontWeight: FontWeight.w500),
+                    ),
+                    Row(
+                      children: [
+                        Text(
+                          _manualPwmOn ? 'ON' : 'OFF',
+                          style: TextStyle(
+                            color: _manualPwmOn
+                                ? calmablesAccentColor
+                                : Colors.grey.shade400,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Switch(
+                          value: _manualPwmOn,
+                          activeColor: calmablesAccentColor,
+                          activeTrackColor:
+                              calmablesAccentColor.withOpacity(0.3),
+                          trackOutlineColor: WidgetStateProperty.resolveWith(
+                            (states) => states.contains(WidgetState.selected)
+                                ? calmablesAccentColor
+                                : Colors.grey.shade300,
+                          ),
+                          onChanged: (v) {
+                            setState(() => _manualPwmOn = v);
+                            sendDataToCalmables([v ? calmablesSliderValue : 0]);
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Intensity',
+                      style: Theme.of(context)
+                          .textTheme
+                          .labelSmall
+                          ?.copyWith(color: Colors.grey.shade600),
+                    ),
+                    Text(
+                      _warmthLabel(calmablesSliderValue),
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                            color: _pwmColor(calmablesSliderValue),
                             fontWeight: FontWeight.w600,
                           ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 12),
-                Container(
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade100,
-                    borderRadius: BorderRadius.circular(10),
+                SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    trackHeight: 4.0,
+                    trackShape: const _GradientSliderTrackShape(),
+                    thumbColor: _pwmColor(calmablesSliderValue),
+                    activeTrackColor: Colors.transparent,
+                    inactiveTrackColor: Colors.transparent,
+                    overlayColor:
+                        _pwmColor(calmablesSliderValue).withOpacity(0.2),
+                    showValueIndicator: ShowValueIndicator.onlyForDiscrete,
+                    valueIndicatorColor: Colors.grey.shade700,
+                    valueIndicatorTextStyle: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 12,
+                    ),
                   ),
-                  padding: const EdgeInsets.all(3),
-                  child: Row(
-                    children: [
-                      _buildModeTab(context, 'Manual', ControlMode.manual),
-                      _buildModeTab(
-                          context, 'HR-based', ControlMode.autopilot),
-                    ],
+                  child: Slider(
+                    value: calmablesSliderValue.toDouble(),
+                    min: 0,
+                    max: 255,
+                    divisions: 255,
+                    label: calmablesSliderValue.toString(),
+                    onChanged: (double value) {
+                      setState(() {
+                        calmablesSliderValue = value.round();
+                      });
+                      if (_manualPwmOn) {
+                        sendDataToCalmables([calmablesSliderValue]);
+                      }
+                      _dataLogger.logMetrics(pwm: calmablesSliderValue);
+                    },
                   ),
                 ),
-                const SizedBox(height: 20),
-                if (_controlMode == ControlMode.manual) ...[
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        'Heat Output',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodyMedium
-                            ?.copyWith(fontWeight: FontWeight.w500),
-                      ),
-                      Row(
-                        children: [
-                          Text(
-                            _manualPwmOn ? 'ON' : 'OFF',
-                            style: TextStyle(
-                              color: _manualPwmOn
-                                  ? const Color(0xFF009682)
-                                  : Colors.grey.shade400,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 13,
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          Switch(
-                            value: _manualPwmOn,
-                            activeColor: const Color(0xFF009682),
-                            activeTrackColor:
-                                const Color(0xFF009682).withOpacity(0.3),
-                            trackOutlineColor:
-                                WidgetStateProperty.resolveWith(
-                              (states) =>
-                                  states.contains(WidgetState.selected)
-                                      ? const Color(0xFF009682)
-                                      : Colors.grey.shade300,
-                            ),
-                            onChanged: (v) {
-                              setState(() => _manualPwmOn = v);
-                              sendDataToCalmables(
-                                  [v ? calmablesSliderValue : 0]);
-                            },
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        'Intensity',
-                        style: Theme.of(context)
-                            .textTheme
-                            .labelSmall
-                            ?.copyWith(color: Colors.grey.shade600),
-                      ),
-                      Text(
-                        _warmthLabel(calmablesSliderValue),
-                        style: Theme.of(context)
-                            .textTheme
-                            .labelMedium
-                            ?.copyWith(
-                              color: _pwmColor(calmablesSliderValue),
-                              fontWeight: FontWeight.w600,
-                            ),
-                      ),
-                    ],
-                  ),
-                  SliderTheme(
-                    data: SliderTheme.of(context).copyWith(
-                      trackHeight: 4.0,
-                      trackShape: const _GradientSliderTrackShape(),
-                      thumbColor: _pwmColor(calmablesSliderValue),
-                      activeTrackColor: Colors.transparent,
-                      inactiveTrackColor: Colors.transparent,
-                      overlayColor:
-                          _pwmColor(calmablesSliderValue).withOpacity(0.2),
-                      showValueIndicator: ShowValueIndicator.onlyForDiscrete,
-                      valueIndicatorColor: Colors.grey.shade700,
-                      valueIndicatorTextStyle: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 12,
-                      ),
+              ] else ...[
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Heat Output',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyMedium
+                          ?.copyWith(fontWeight: FontWeight.w500),
                     ),
-                    child: Slider(
-                      value: calmablesSliderValue.toDouble(),
-                      min: 0,
-                      max: 255,
-                      divisions: 255,
-                      label: calmablesSliderValue.toString(),
-                      onChanged: (double value) {
-                        setState(() {
-                          calmablesSliderValue = value.round();
-                        });
-                        if (_manualPwmOn) {
-                          sendDataToCalmables([calmablesSliderValue]);
-                        }
-                        _dataLogger.logMetrics(pwm: calmablesSliderValue);
-                      },
+                    Row(
+                      children: [
+                        AnimatedDefaultTextStyle(
+                          duration: const Duration(milliseconds: 300),
+                          style: TextStyle(
+                            color: _autopilotActive
+                                ? const Color(0xFFFFB300)
+                                : Colors.grey.shade400,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                          ),
+                          child: Text(_autopilotActive ? 'ACTIVE' : 'INACTIVE'),
+                        ),
+                        const SizedBox(width: 10),
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 400),
+                          width: 20,
+                          height: 20,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: _autopilotActive
+                                ? const Color(0xFFFFB300)
+                                : Colors.grey.shade300,
+                            boxShadow: _autopilotActive
+                                ? [
+                                    BoxShadow(
+                                      color: const Color(0xFFFFB300)
+                                          .withOpacity(0.7),
+                                      blurRadius: 8,
+                                      spreadRadius: 2,
+                                    )
+                                  ]
+                                : null,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Intensity',
+                      style: Theme.of(context)
+                          .textTheme
+                          .labelSmall
+                          ?.copyWith(color: Colors.grey.shade600),
+                    ),
+                    Text(
+                      _warmthLabel(calmablesSliderValue),
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                            color: _pwmColor(calmablesSliderValue),
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                  ],
+                ),
+                SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    trackHeight: 4.0,
+                    trackShape: const _GradientSliderTrackShape(),
+                    thumbColor: _pwmColor(calmablesSliderValue),
+                    activeTrackColor: Colors.transparent,
+                    inactiveTrackColor: Colors.transparent,
+                    overlayColor:
+                        _pwmColor(calmablesSliderValue).withOpacity(0.2),
+                    showValueIndicator: ShowValueIndicator.onlyForDiscrete,
+                    valueIndicatorColor: Colors.grey.shade700,
+                    valueIndicatorTextStyle: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 12,
                     ),
                   ),
-                ] else ...[
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        'Heat Output',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodyMedium
-                            ?.copyWith(fontWeight: FontWeight.w500),
-                      ),
-                      Row(
-                        children: [
-                          AnimatedDefaultTextStyle(
-                            duration: const Duration(milliseconds: 300),
-                            style: TextStyle(
-                              color: _autopilotActive
-                                  ? const Color(0xFFFFB300)
-                                  : Colors.grey.shade400,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 13,
-                            ),
-                            child: Text(
-                                _autopilotActive ? 'ACTIVE' : 'INACTIVE'),
-                          ),
-                          const SizedBox(width: 10),
-                          AnimatedContainer(
-                            duration: const Duration(milliseconds: 400),
-                            width: 20,
-                            height: 20,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: _autopilotActive
-                                  ? const Color(0xFFFFB300)
-                                  : Colors.grey.shade300,
-                              boxShadow: _autopilotActive
-                                  ? [
-                                      BoxShadow(
-                                        color: const Color(0xFFFFB300)
-                                            .withOpacity(0.7),
-                                        blurRadius: 8,
-                                        spreadRadius: 2,
-                                      )
-                                    ]
-                                  : null,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
+                  child: Slider(
+                    value: calmablesSliderValue.toDouble(),
+                    min: 0,
+                    max: 255,
+                    divisions: 255,
+                    label: calmablesSliderValue.toString(),
+                    onChanged: (double value) {
+                      setState(() {
+                        calmablesSliderValue = value.round();
+                      });
+                      if (_autopilotActive) {
+                        sendDataToCalmables([calmablesSliderValue]);
+                      }
+                    },
                   ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        'Intensity',
-                        style: Theme.of(context)
-                            .textTheme
-                            .labelSmall
-                            ?.copyWith(color: Colors.grey.shade600),
-                      ),
-                      Text(
-                        _warmthLabel(calmablesSliderValue),
-                        style: Theme.of(context)
-                            .textTheme
-                            .labelMedium
-                            ?.copyWith(
-                              color: _pwmColor(calmablesSliderValue),
-                              fontWeight: FontWeight.w600,
-                            ),
-                      ),
-                    ],
-                  ),
-                  SliderTheme(
-                    data: SliderTheme.of(context).copyWith(
-                      trackHeight: 4.0,
-                      trackShape: const _GradientSliderTrackShape(),
-                      thumbColor: _pwmColor(calmablesSliderValue),
-                      activeTrackColor: Colors.transparent,
-                      inactiveTrackColor: Colors.transparent,
-                      overlayColor:
-                          _pwmColor(calmablesSliderValue).withOpacity(0.2),
-                      showValueIndicator: ShowValueIndicator.onlyForDiscrete,
-                      valueIndicatorColor: Colors.grey.shade700,
-                      valueIndicatorTextStyle: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 12,
-                      ),
-                    ),
-                    child: Slider(
-                      value: calmablesSliderValue.toDouble(),
-                      min: 0,
-                      max: 255,
-                      divisions: 255,
-                      label: calmablesSliderValue.toString(),
-                      onChanged: (double value) {
-                        setState(() {
-                          calmablesSliderValue = value.round();
-                        });
-                        if (_autopilotActive) {
-                          sendDataToCalmables([calmablesSliderValue]);
-                        }
-                      },
-                    ),
-                  ),
-                ],
+                ),
               ],
-            ),
+            ],
           ),
         ),
         const SizedBox(height: 12),
@@ -1425,10 +1380,9 @@ class _GradientSliderTrackShape extends SliderTrackShape
     bool isDiscrete = false,
   }) {
     const trackHeight = 4.0;
-    final thumbWidth =
-        (sliderTheme.thumbShape ?? const RoundSliderThumbShape())
-            .getPreferredSize(isEnabled, isDiscrete)
-            .width;
+    final thumbWidth = (sliderTheme.thumbShape ?? const RoundSliderThumbShape())
+        .getPreferredSize(isEnabled, isDiscrete)
+        .width;
     final trackLeft = offset.dx + thumbWidth / 2;
     final trackTop = offset.dy + (parentBox.size.height - trackHeight) / 2;
     final trackRight = trackLeft + parentBox.size.width - thumbWidth;
@@ -1458,8 +1412,7 @@ class _GradientSliderTrackShape extends SliderTrackShape
       isDiscrete: isDiscrete,
     );
     const radius = Radius.circular(4);
-    final clampedThumb =
-        thumbCenter.dx.clamp(trackRect.left, trackRect.right);
+    final clampedThumb = thumbCenter.dx.clamp(trackRect.left, trackRect.right);
 
     // Full gray background track (always visible)
     context.canvas.drawRRect(
@@ -1548,65 +1501,47 @@ class _MetricCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    icon,
+    return CalmablesCardShell(
+      onTap: onTap,
+      padding: calmablesSmallCardPadding,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CalmablesCompactHeader(
+            icon: icon,
+            title: title,
+            trailing: onTap == null
+                ? null
+                : Icon(
+                    Icons.edit_rounded,
                     size: 16,
-                    color: const Color(0xFF009682),
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      title,
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                value,
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
                     ),
-                  ),
-                  if (onTap != null)
-                    Icon(
-                      Icons.edit_rounded,
-                      size: 13,
-                      color: Colors.grey.shade400,
-                    ),
-                ],
               ),
-              const Spacer(),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    value,
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
-                  ),
-                  const SizedBox(width: 3),
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 3),
-                    child: Text(
-                      unit,
-                      style:
-                          Theme.of(context).textTheme.labelMedium?.copyWith(
-                                color: Colors.grey.shade600,
-                              ),
-                    ),
-                  ),
-                ],
+              const SizedBox(width: 4),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 3),
+                child: Text(
+                  unit,
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
               ),
             ],
           ),
-        ),
+        ],
       ),
     );
   }
@@ -1635,52 +1570,30 @@ class _SignalPanelCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  icon,
-                  size: 18,
-                  color: const Color(0xFF009682),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  title,
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                ),
-              ],
+    return CalmablesCardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CalmablesCardHeader(
+            icon: icon,
+            title: title,
+            subtitle: subtitle.isEmpty ? null : subtitle,
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 88,
+            child: RollingChart(
+              dataSteam: chartStream,
+              peakTimestampsStream: peakTimestampsStream,
+              timestampExponent: timestampExponent,
+              timeWindow: 5,
+              showXAxis: false,
+              showYAxis: false,
+              fixedMeasureMin: fixedMeasureMin,
+              fixedMeasureMax: fixedMeasureMax,
             ),
-            if (subtitle.isNotEmpty) ...[              const SizedBox(height: 4),
-              Text(
-                subtitle,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Color(0xFF009682),
-                    ),
-              ),
-            ],
-            const SizedBox(height: 10),
-            SizedBox(
-              height: 88,
-              child: RollingChart(
-                dataSteam: chartStream,
-                peakTimestampsStream: peakTimestampsStream,
-                timestampExponent: timestampExponent,
-                timeWindow: 5,
-                showXAxis: false,
-                showYAxis: false,
-                fixedMeasureMin: fixedMeasureMin,
-                fixedMeasureMax: fixedMeasureMax,
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -1695,61 +1608,29 @@ class _SignalQualityCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final (label, hint, icon, color) = _presentQuality(colorScheme);
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      icon,
-                      size: 18,
-                      color: color,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'PPG',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
-                    ),
-                  ],
-                ),
-                Container(
-                  decoration: BoxDecoration(
-                    color: color.withValues(alpha: 0.14),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
-                  ),
-                  child: Text(
-                    label,
-                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                          color: color,
-                          fontWeight: FontWeight.w700,
-                        ),
-                  ),
-                ),
-              ],
+    final (label, _, icon, color) =
+        _presentQuality(Theme.of(context).colorScheme);
+    return CalmablesCardShell(
+      padding: calmablesSmallCardPadding,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CalmablesCompactHeader(
+            icon: icon,
+            title: 'PPG',
+            accentColor: color,
+          ),
+          const Spacer(),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: CalmablesStatusChip(
+              label: label,
+              color: color,
+              dense: true,
+              textStyle: Theme.of(context).textTheme.labelMedium,
             ),
-            const SizedBox(height: 6),
-            Text(
-              hint,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -1759,28 +1640,28 @@ class _SignalQualityCard extends StatelessWidget {
       case PpgSignalQuality.unavailable:
         return (
           'Unavailable',
-          'No stable heartbeat.',
+          'No stable heartbeat',
           Icons.portable_wifi_off_rounded,
           colors.onSurfaceVariant,
         );
       case PpgSignalQuality.bad:
         return (
           'Bad',
-          'Signal is noisy.',
+          'Signal is noisy',
           Icons.signal_cellular_connected_no_internet_4_bar_rounded,
           colors.error,
         );
       case PpgSignalQuality.fair:
         return (
           'Fair',
-          'Heartbeat is visible.',
+          'Heartbeat is visible',
           Icons.network_check_rounded,
           Colors.orange.shade700,
         );
       case PpgSignalQuality.good:
         return (
           'Good',
-          'Signal quality is good.',
+          'Signal quality is good',
           Icons.check_circle_rounded,
           Color(0xFF8CB63C),
         );

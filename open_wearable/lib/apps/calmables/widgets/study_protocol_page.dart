@@ -6,6 +6,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:open_wearable/apps/calmables/model/ppg_filter.dart';
 import 'package:open_wearable/apps/calmables/model/sensor_data_logger.dart';
+import 'package:open_wearable/apps/calmables/widgets/calmables_card_styles.dart';
 import 'package:open_wearable/apps/calmables/widgets/rowling_chart.dart';
 import 'package:open_wearable/apps/calmables/widgets/rolling_hr_chart.dart';
 
@@ -25,8 +26,10 @@ enum _Phase {
   ma1Running,
   hit2Running,
   ma2Running,
-  hit3Running, ma3Running,
-  hit4Running, ma4Running,
+  hit3Running,
+  ma3Running,
+  hit4Running,
+  ma4Running,
   hit5Running,
   surveyHintPostMast,
   relaxationReady,
@@ -201,7 +204,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
       _phase == _Phase.ma1Running ||
       _phase == _Phase.ma2Running ||
       _phase == _Phase.ma3Running ||
-        _phase == _Phase.ma4Running;
+      _phase == _Phase.ma4Running;
 
   void _sendDashboardState(WebSocket ws) {
     try {
@@ -610,7 +613,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
       if (!connected && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Calmables nicht verbunden – Relaxation ohne Heizung'),
+            content:
+                Text('Calmables nicht verbunden – Relaxation ohne Heizung'),
             duration: Duration(seconds: 4),
           ),
         );
@@ -636,7 +640,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
   }
 
   void _onBlockComplete() {
-    _log('block_${_currentBlockNumber}_end_${_isCurrentBlockTreatment ? 'treatment' : 'control'}');
+    _log(
+        'block_${_currentBlockNumber}_end_${_isCurrentBlockTreatment ? 'treatment' : 'control'}');
     if (_currentBlockNumber == 1) {
       setState(() {
         _currentBlockNumber = 2;
@@ -645,7 +650,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
         _maCorrectCount = 0;
         _phase = _Phase.akklimatisation;
       });
-      _log('block_2_start_${_isCurrentBlockTreatment ? 'treatment' : 'control'}');
+      _log(
+          'block_2_start_${_isCurrentBlockTreatment ? 'treatment' : 'control'}');
     } else {
       setState(() => _phase = _Phase.done);
     }
@@ -944,8 +950,8 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
                 padding: const EdgeInsets.only(right: 2),
                 child: Center(
                   child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 5),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                     decoration: BoxDecoration(
                       color: _isCurrentBlockTreatment
                           ? _kGreen.withValues(alpha: 0.15)
@@ -1138,7 +1144,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
                 builder: (ctx, snap) {
                   final q = snap.data ?? PpgSignalQuality.unavailable;
                   final cs = Theme.of(ctx).colorScheme;
-                  final (label, hint, icon, color) = switch (q) {
+                  final (label, _, icon, color) = switch (q) {
                     PpgSignalQuality.good => (
                         'Good',
                         'Signal quality is good.',
@@ -1165,49 +1171,23 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
                         cs.onSurfaceVariant
                       ),
                   };
-                  return Card(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Row(children: [
-                                  Icon(icon, size: 16, color: color),
-                                  const SizedBox(width: 6),
-                                  Text('PPG',
-                                      style: Theme.of(ctx)
-                                          .textTheme
-                                          .titleSmall
-                                          ?.copyWith(
-                                              fontWeight: FontWeight.w700)),
-                                ]),
-                                Container(
-                                  decoration: BoxDecoration(
-                                    color: color.withValues(alpha: 0.14),
-                                    borderRadius: BorderRadius.circular(999),
-                                  ),
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 8, vertical: 3),
-                                  child: Text(label,
-                                      style: Theme.of(ctx)
-                                          .textTheme
-                                          .labelMedium
-                                          ?.copyWith(
-                                              color: color,
-                                              fontWeight: FontWeight.w700)),
-                                ),
-                              ]),
-                          const SizedBox(height: 6),
-                          Text(hint,
-                              style: Theme.of(ctx)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(color: cs.onSurfaceVariant)),
-                        ],
-                      ),
+                  return CalmablesCardShell(
+                    padding: calmablesSmallCardPadding,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        CalmablesCompactHeader(
+                          icon: icon,
+                          title: 'PPG',
+                          accentColor: color,
+                        ),
+                        const Spacer(),
+                        CalmablesStatusChip(
+                          label: label,
+                          color: color,
+                          dense: true,
+                        ),
+                      ],
                     ),
                   );
                 },
@@ -1230,75 +1210,54 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
               widget.rawHrStream != null &&
               widget.smoothedHrStream != null) ...[
             const SizedBox(height: 10),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(children: [
-                      const Icon(Icons.favorite_rounded,
-                          size: 16, color: _kGreen),
-                      const SizedBox(width: 6),
-                      Text('Heart Rate (60s)',
-                          style: Theme.of(context)
-                              .textTheme
-                              .titleSmall
-                              ?.copyWith(fontWeight: FontWeight.w700)),
-                    ]),
-                    const SizedBox(height: 4),
-                    Text('Grau: RR-Intervall HR · Rot: Kalman-gefiltert',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(color: _kGreen)),
-                    const SizedBox(height: 8),
-                    SizedBox(
-                      height: 120,
-                      child: RollingHrChart(
-                        rawHrStream: widget.rawHrStream!,
-                        smoothedHrStream: widget.smoothedHrStream!,
-                        timestampExponent: widget.timestampExponent,
-                        timeWindow: 60,
-                      ),
+            CalmablesCardShell(
+              padding: calmablesCompactCardPadding,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const CalmablesCardHeader(
+                    icon: Icons.favorite_rounded,
+                    title: 'Heart Rate (60s)',
+                    subtitle: 'Grau: RR-Intervall HR · Rot: Kalman-gefiltert',
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    height: 120,
+                    child: RollingHrChart(
+                      rawHrStream: widget.rawHrStream!,
+                      smoothedHrStream: widget.smoothedHrStream!,
+                      timestampExponent: widget.timestampExponent,
+                      timeWindow: 60,
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
           ],
           // PPG chart card
           if (widget.displayPpgStream != null) ...[
             const SizedBox(height: 10),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(children: [
-                      const Icon(Icons.show_chart_rounded,
-                          size: 16, color: _kGreen),
-                      const SizedBox(width: 6),
-                      Text('PPG',
-                          style: Theme.of(context)
-                              .textTheme
-                              .titleSmall
-                              ?.copyWith(fontWeight: FontWeight.w700)),
-                    ]),
-                    const SizedBox(height: 8),
-                    SizedBox(
-                      height: 88,
-                      child: RollingChart(
-                        dataSteam: widget.displayPpgStream!,
-                        timestampExponent: widget.timestampExponent,
-                        timeWindow: 5,
-                        showXAxis: false,
-                        showYAxis: false,
-                      ),
+            CalmablesCardShell(
+              padding: calmablesCompactCardPadding,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const CalmablesCardHeader(
+                    icon: Icons.show_chart_rounded,
+                    title: 'PPG Signal',
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    height: 88,
+                    child: RollingChart(
+                      dataSteam: widget.displayPpgStream!,
+                      timestampExponent: widget.timestampExponent,
+                      timeWindow: 5,
+                      showXAxis: false,
+                      showYAxis: false,
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -1359,82 +1318,81 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
     return SingleChildScrollView(
       child: Column(
         children: [
-        const SizedBox(height: 48),
-        const Icon(Icons.person_rounded, size: 72, color: _kGreen),
-        const SizedBox(height: 24),
-        _phaseTitle('Participant ID'),
-        const SizedBox(height: 8),
-        const Text(
-          'Alle Aufnahme-Dateien werden mit dieser ID benannt.',
-          textAlign: TextAlign.center,
-        ),
-        const SizedBox(height: 24),
-        TextField(
-          controller: _participantIdController,
-          decoration: const InputDecoration(
-            labelText: 'Participant ID',
-            hintText: 'z. B. P001',
-            border: OutlineInputBorder(),
+          const SizedBox(height: 48),
+          const Icon(Icons.person_rounded, size: 72, color: _kGreen),
+          const SizedBox(height: 24),
+          _phaseTitle('Participant ID'),
+          const SizedBox(height: 8),
+          const Text(
+            'Alle Aufnahme-Dateien werden mit dieser ID benannt.',
+            textAlign: TextAlign.center,
           ),
-          textInputAction: TextInputAction.done,
-          autofocus: true,
-        ),
-        const SizedBox(height: 24),
-        // Block order selection
-        Align(
-          alignment: Alignment.centerLeft,
-          child: Text(
-            'Studienreihenfolge',
+          const SizedBox(height: 24),
+          TextField(
+            controller: _participantIdController,
+            decoration: const InputDecoration(
+              labelText: 'Participant ID',
+              hintText: 'z. B. P001',
+              border: OutlineInputBorder(),
+            ),
+            textInputAction: TextInputAction.done,
+            autofocus: true,
+          ),
+          const SizedBox(height: 24),
+          // Block order selection
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'Studienreihenfolge',
+              style: Theme.of(context)
+                  .textTheme
+                  .labelLarge
+                  ?.copyWith(color: Colors.grey.shade700),
+            ),
+          ),
+          const SizedBox(height: 10),
+          SegmentedButton<_BlockOrder>(
+            segments: const [
+              ButtonSegment(
+                value: _BlockOrder.treatmentFirst,
+                label: Text('Treatment zuerst'),
+                icon: Icon(Icons.thermostat_rounded),
+              ),
+              ButtonSegment(
+                value: _BlockOrder.controlFirst,
+                label: Text('Control zuerst'),
+                icon: Icon(Icons.science_outlined),
+              ),
+            ],
+            selected: {_blockOrder},
+            onSelectionChanged: (s) => setState(() => _blockOrder = s.first),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _blockOrder == _BlockOrder.treatmentFirst
+                ? 'Block 1: Treatment · Block 2: Control'
+                : 'Block 1: Control · Block 2: Treatment',
             style: Theme.of(context)
                 .textTheme
-                .labelLarge
-                ?.copyWith(color: Colors.grey.shade700),
+                .bodySmall
+                ?.copyWith(color: Colors.grey),
+            textAlign: TextAlign.center,
           ),
-        ),
-        const SizedBox(height: 10),
-        SegmentedButton<_BlockOrder>(
-          segments: const [
-            ButtonSegment(
-              value: _BlockOrder.treatmentFirst,
-              label: Text('Treatment zuerst'),
-              icon: Icon(Icons.thermostat_rounded),
+          const SizedBox(height: 24),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: () async {
+                final id = _participantIdController.text.trim();
+                if (id.isEmpty) return;
+                _log('study_order_${_blockOrder.name}');
+                await _startRecording(id);
+              },
+              icon: const Icon(Icons.fiber_manual_record),
+              label: const Text('Aufnahme starten & Protokoll beginnen'),
+              style: _primaryStyle(),
             ),
-            ButtonSegment(
-              value: _BlockOrder.controlFirst,
-              label: Text('Control zuerst'),
-              icon: Icon(Icons.science_outlined),
-            ),
-          ],
-          selected: {_blockOrder},
-          onSelectionChanged: (s) =>
-              setState(() => _blockOrder = s.first),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          _blockOrder == _BlockOrder.treatmentFirst
-              ? 'Block 1: Treatment · Block 2: Control'
-              : 'Block 1: Control · Block 2: Treatment',
-          style: Theme.of(context)
-              .textTheme
-              .bodySmall
-              ?.copyWith(color: Colors.grey),
-          textAlign: TextAlign.center,
-        ),
-        const SizedBox(height: 24),
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
-            onPressed: () async {
-              final id = _participantIdController.text.trim();
-              if (id.isEmpty) return;
-              _log('study_order_${_blockOrder.name}');
-              await _startRecording(id);
-            },
-            icon: const Icon(Icons.fiber_manual_record),
-            label: const Text('Aufnahme starten & Protokoll beginnen'),
-            style: _primaryStyle(),
           ),
-        ),
         ],
       ),
     );
@@ -1818,8 +1776,7 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
               const SizedBox(width: 6),
               Text(
                 'Control-Phase: Calmables deaktiviert',
-                style: TextStyle(
-                    fontSize: 12, color: Colors.grey.shade500),
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
               ),
             ],
           ),
@@ -2208,40 +2165,39 @@ class _ChartMetricCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(children: [
-              Icon(icon, size: 16, color: iconColor),
-              const SizedBox(width: 6),
-              Text(title,
+    return CalmablesCardShell(
+      padding: calmablesSmallCardPadding,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CalmablesCompactHeader(
+            icon: icon,
+            title: title,
+            accentColor: iconColor,
+          ),
+          const SizedBox(height: 10),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(value,
                   style: Theme.of(context)
                       .textTheme
-                      .titleSmall
+                      .headlineSmall
                       ?.copyWith(fontWeight: FontWeight.w700)),
-            ]),
-            const SizedBox(height: 6),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(value,
-                    style: Theme.of(context)
-                        .textTheme
-                        .headlineSmall
-                        ?.copyWith(fontWeight: FontWeight.w700)),
-                const SizedBox(width: 4),
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 3),
-                  child:
-                      Text(unit, style: Theme.of(context).textTheme.labelLarge),
+              const SizedBox(width: 4),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 3),
+                child: Text(
+                  unit,
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        fontWeight: FontWeight.w600,
+                      ),
                 ),
-              ],
-            ),
-          ],
-        ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
