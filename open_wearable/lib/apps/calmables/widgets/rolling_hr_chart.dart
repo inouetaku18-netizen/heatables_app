@@ -4,6 +4,10 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 
+const Color _rawLegendColor = Color(0xFF9E9E9E);
+const Color _filteredLegendColor = Color(0xFFE53935);
+const Color _gapLegendColor = Color(0xCCFFB300);
+
 /// A rolling chart that overlays raw and smoothed heart rate over time.
 class RollingHrChart extends StatefulWidget {
   final Stream<(int, double)> rawHrStream;
@@ -23,6 +27,68 @@ class RollingHrChart extends StatefulWidget {
 
   @override
   State<RollingHrChart> createState() => _RollingHrChartState();
+}
+
+class RollingHrChartLegend extends StatelessWidget {
+  final bool showBleGap;
+
+  const RollingHrChartLegend({
+    super.key,
+    this.showBleGap = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final textStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+          fontWeight: FontWeight.w600,
+        );
+
+    return Wrap(
+      spacing: 14,
+      runSpacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        _LegendItem(
+          marker: Container(
+            width: 8,
+            height: 8,
+            decoration: const BoxDecoration(
+              color: _rawLegendColor,
+              shape: BoxShape.circle,
+            ),
+          ),
+          label: 'Raw',
+          textStyle: textStyle,
+        ),
+        _LegendItem(
+          marker: Container(
+            width: 8,
+            height: 8,
+            decoration: const BoxDecoration(
+              color: _filteredLegendColor,
+              shape: BoxShape.circle,
+            ),
+          ),
+          label: 'Filtered',
+          textStyle: textStyle,
+        ),
+        if (showBleGap)
+          _LegendItem(
+            marker: Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(999),
+                color: _gapLegendColor,
+              ),
+            ),
+            label: 'BLE Gap',
+            textStyle: textStyle,
+          ),
+      ],
+    );
+  }
 }
 
 class _RollingHrChartState extends State<RollingHrChart> {
@@ -265,7 +331,7 @@ class _DualLinePainter extends CustomPainter {
 
     if (gapXPositions != null && gapXPositions!.isNotEmpty) {
       final gapPaint = Paint()
-        ..color = const Color(0xCCFFB300)
+        ..color = _gapLegendColor
         ..strokeWidth = 2.0;
       for (final gx in gapXPositions!) {
         final px = toX(gx);
@@ -333,54 +399,12 @@ class _DualLinePainter extends CustomPainter {
 
     if (smoothedPoints != null && smoothedPoints!.length >= 2) {
       final smoothPaint = Paint()
-        ..color = const Color(0xFFE53935)
+        ..color = _filteredLegendColor
         ..strokeWidth = 2.0
         ..style = PaintingStyle.stroke
         ..strokeJoin = StrokeJoin.round
         ..isAntiAlias = true;
       _drawLine(canvas, smoothedPoints!, toX, toY, chartHeight, smoothPaint);
-    }
-
-    const legendY = 4.0;
-    final legendX = leftMargin + 4;
-
-    canvas.drawCircle(
-      Offset(legendX, legendY + 5),
-      3,
-      Paint()..color = Colors.grey.shade500,
-    );
-    final rawLabel = TextPainter(
-      text: TextSpan(text: ' RR-HR', style: axisStyle),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    rawLabel.paint(canvas, Offset(legendX + 5, legendY));
-
-    final smoothLegendX = legendX + rawLabel.width + 20;
-    canvas.drawCircle(
-      Offset(smoothLegendX, legendY + 5),
-      3,
-      Paint()..color = const Color(0xFFE53935),
-    );
-    final smoothLabel = TextPainter(
-      text: TextSpan(text: ' Kalman', style: axisStyle),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    smoothLabel.paint(canvas, Offset(smoothLegendX + 5, legendY));
-
-    if (gapXPositions != null && gapXPositions!.isNotEmpty) {
-      final gapLegendX = smoothLegendX + smoothLabel.width + 20;
-      canvas.drawLine(
-        Offset(gapLegendX, legendY + 2),
-        Offset(gapLegendX, legendY + 9),
-        Paint()
-          ..color = const Color(0xCCFFB300)
-          ..strokeWidth = 2.0,
-      );
-      final gapLabel = TextPainter(
-        text: TextSpan(text: ' BLE Gap', style: axisStyle),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      gapLabel.paint(canvas, Offset(gapLegendX + 3, legendY));
     }
   }
 
@@ -425,6 +449,30 @@ class _DualLinePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _DualLinePainter oldDelegate) => true;
+}
+
+class _LegendItem extends StatelessWidget {
+  final Widget marker;
+  final String label;
+  final TextStyle? textStyle;
+
+  const _LegendItem({
+    required this.marker,
+    required this.label,
+    required this.textStyle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        marker,
+        const SizedBox(width: 6),
+        Text(label, style: textStyle),
+      ],
+    );
+  }
 }
 
 class _Pt {

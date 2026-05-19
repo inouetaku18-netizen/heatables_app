@@ -77,7 +77,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
   bool _autopilotActive = false;
   VoidCallback? _sheetRefresh;
 
-  double BoxWidth = 186;
+  double BoxWidth = 168;
   double BoxHeight = 100;
 
   final String _characteristicUuid = "6bb7da44-e8b9-3e3f-6d5a-e212c378d2df";
@@ -986,70 +986,76 @@ class _CalmablesPageState extends State<CalmablesPage> {
                     heartRateHistory.removeAt(0);
                   }
                 }
-                return Column(
-                  children: [
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                return LayoutBuilder(
+                  builder: (context, constraints) {
+                    final cardWidth = (constraints.maxWidth - 12) / 2;
+                    final cardHeight = cardWidth * (BoxHeight / BoxWidth);
+                    return Column(
                       children: [
-                        Expanded(
-                          child: SizedBox(
-                            height: BoxHeight,
-                            child: _SignalQualityCard(quality: quality),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: SizedBox(
-                            height: BoxHeight,
-                            child: _MetricCard(
-                              title: 'Heart Rate',
-                              icon: Icons.favorite_rounded,
-                              value: bpm != null && bpm.isFinite
-                                  ? bpm.toStringAsFixed(0)
-                                  : '--',
-                              unit: 'BPM',
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SizedBox(
+                              width: cardWidth,
+                              height: cardHeight,
+                              child: _SignalQualityCard(quality: quality),
                             ),
-                          ),
+                            const SizedBox(width: 12),
+                            SizedBox(
+                              width: cardWidth,
+                              height: cardHeight,
+                              child: _MetricCard(
+                                title: 'Heart Rate',
+                                icon: Icons.favorite_rounded,
+                                value: bpm != null && bpm.isFinite
+                                    ? bpm.toStringAsFixed(0)
+                                    : '--',
+                                unit: 'BPM',
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            SizedBox(
+                              width: cardWidth,
+                              height: cardHeight,
+                              child: _MetricCard(
+                                title: 'Baseline',
+                                icon: Icons.horizontal_rule_rounded,
+                                value: _calibration.latestResult != null
+                                    ? _calibration
+                                        .latestResult!.baselineHeartRate
+                                        .toStringAsFixed(1)
+                                    : '--',
+                                unit: 'BPM',
+                                onTap: _openCalibrationSheet,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            SizedBox(
+                              width: cardWidth,
+                              height: cardHeight,
+                              child: _MetricCard(
+                                title: 'Trigger',
+                                icon: Icons.arrow_upward_rounded,
+                                value: _calibration.latestResult != null
+                                    ? _calibration
+                                        .latestResult!.triggerThreshold
+                                        .toStringAsFixed(1)
+                                    : '--',
+                                unit: 'BPM',
+                                onTap: _openCalibrationSheet,
+                              ),
+                            ),
+                          ],
                         ),
                       ],
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: SizedBox(
-                            height: BoxHeight,
-                            child: _MetricCard(
-                              title: 'Baseline',
-                              icon: Icons.horizontal_rule_rounded,
-                              value: _calibration.latestResult != null
-                                  ? _calibration.latestResult!.baselineHeartRate
-                                      .toStringAsFixed(1)
-                                  : '--',
-                              unit: 'BPM',
-                              onTap: _openCalibrationSheet,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: SizedBox(
-                            height: BoxHeight,
-                            child: _MetricCard(
-                              title: 'Trigger',
-                              icon: Icons.arrow_upward_rounded,
-                              value: _calibration.latestResult != null
-                                  ? _calibration.latestResult!.triggerThreshold
-                                      .toStringAsFixed(1)
-                                  : '--',
-                              unit: 'BPM',
-                              onTap: _openCalibrationSheet,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
+                    );
+                  },
                 );
               },
             );
@@ -1076,9 +1082,11 @@ class _CalmablesPageState extends State<CalmablesPage> {
                   icon: Icons.favorite_rounded,
                   title: 'Heart Rate (60s)',
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 10),
+                const RollingHrChartLegend(),
+                const SizedBox(height: 10),
                 SizedBox(
-                  height: 120,
+                  height: 112,
                   child: RollingHrChart(
                     rawHrStream: _rawHrChartStream!,
                     smoothedHrStream: _smoothedHrChartStream!,
@@ -1518,29 +1526,35 @@ class _MetricCard extends StatelessWidget {
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
           ),
-          const SizedBox(height: 6),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                value,
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-              ),
-              const SizedBox(width: 4),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 3),
-                child: Text(
-                  unit,
-                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        fontWeight: FontWeight.w600,
+          const Spacer(flex: 3),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  value,
+                  textAlign: TextAlign.end,
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
                       ),
                 ),
-              ),
-            ],
+                const SizedBox(width: 4),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 3),
+                  child: Text(
+                    unit,
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                ),
+              ],
+            ),
           ),
+          const Spacer(flex: 2),
         ],
       ),
     );
@@ -1620,7 +1634,7 @@ class _SignalQualityCard extends StatelessWidget {
             title: 'PPG',
             accentColor: color,
           ),
-          const Spacer(),
+          const Spacer(flex: 3),
           Align(
             alignment: Alignment.centerLeft,
             child: CalmablesStatusChip(
@@ -1632,6 +1646,7 @@ class _SignalQualityCard extends StatelessWidget {
                   ),
             ),
           ),
+          const Spacer(flex: 2),
         ],
       ),
     );

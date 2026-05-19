@@ -1182,14 +1182,17 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
                           accentColor: color,
                         ),
                         const Spacer(),
-                        CalmablesStatusChip(
-                          label: label,
-                          color: color,
-                          dense: true,
-                          textStyle:
-                              Theme.of(ctx).textTheme.titleSmall?.copyWith(
-                                    fontSize: 18,
-                                  ),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: CalmablesStatusChip(
+                            label: label,
+                            color: color,
+                            dense: true,
+                            textStyle:
+                                Theme.of(ctx).textTheme.titleSmall?.copyWith(
+                                      fontSize: 18,
+                                    ),
+                          ),
                         ),
                       ],
                     ),
@@ -1222,11 +1225,12 @@ class _StudyProtocolPageState extends State<StudyProtocolPage>
                   const CalmablesCardHeader(
                     icon: Icons.favorite_rounded,
                     title: 'Heart Rate (60s)',
-                    subtitle: 'Grau: RR-Intervall HR · Rot: Kalman-gefiltert',
                   ),
                   const SizedBox(height: 10),
+                  const RollingHrChartLegend(),
+                  const SizedBox(height: 10),
                   SizedBox(
-                    height: 120,
+                    height: 112,
                     child: RollingHrChart(
                       rawHrStream: widget.rawHrStream!,
                       smoothedHrStream: widget.smoothedHrStream!,
@@ -2180,26 +2184,33 @@ class _ChartMetricCard extends StatelessWidget {
             accentColor: iconColor,
           ),
           const SizedBox(height: 10),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(value,
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  value,
+                  textAlign: TextAlign.end,
                   style: Theme.of(context)
                       .textTheme
                       .headlineSmall
-                      ?.copyWith(fontWeight: FontWeight.w700)),
-              const SizedBox(width: 4),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 3),
-                child: Text(
-                  unit,
-                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        fontWeight: FontWeight.w600,
-                      ),
+                      ?.copyWith(fontWeight: FontWeight.w700),
                 ),
-              ),
-            ],
+                const SizedBox(width: 4),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 3),
+                  child: Text(
+                    unit,
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
