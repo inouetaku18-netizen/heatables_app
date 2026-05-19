@@ -1448,7 +1448,7 @@ class _GradientSliderTrackShape extends SliderTrackShape
 
 // ── Editable metric field ───────────────────────────────────────────────────
 
-class _EditableMetricField extends StatelessWidget {
+class _EditableMetricField extends StatefulWidget {
   final String label;
   final TextEditingController controller;
   final String hintValue;
@@ -1462,28 +1462,53 @@ class _EditableMetricField extends StatelessWidget {
   });
 
   @override
+  State<_EditableMetricField> createState() => _EditableMetricFieldState();
+}
+
+class _EditableMetricFieldState extends State<_EditableMetricField> {
+  late final FocusNode _focusNode;
+
+  @override
+  void initState() {
+    super.initState();
+    _focusNode = FocusNode();
+    // Submit whenever the field loses focus (e.g. tap outside, switch fields)
+    _focusNode.addListener(() {
+      if (!_focusNode.hasFocus && widget.controller.text.isNotEmpty) {
+        widget.onSubmitted(widget.controller.text);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          label,
+          widget.label,
           style: Theme.of(context).textTheme.labelMedium,
         ),
         const SizedBox(height: 4),
         TextField(
-          controller: controller,
+          controller: widget.controller,
+          focusNode: _focusNode,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
           decoration: InputDecoration(
-            hintText: hintValue,
+            hintText: widget.hintValue,
             isDense: true,
             contentPadding:
                 const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
             border: const OutlineInputBorder(),
           ),
-          onSubmitted: onSubmitted,
-          onEditingComplete: () {
-            onSubmitted(controller.text);
+          onSubmitted: (val) {
+            widget.onSubmitted(val);
             FocusScope.of(context).unfocus();
           },
         ),

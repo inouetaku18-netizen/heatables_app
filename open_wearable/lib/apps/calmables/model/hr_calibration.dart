@@ -18,7 +18,7 @@ class _TimestampedSample {
 class CalibrationResult {
   double baselineHeartRate;
   double triggerThreshold;
-  final double windowStd;
+  double windowStd;
 
   CalibrationResult({
     required this.baselineHeartRate,
@@ -125,18 +125,27 @@ class HrCalibration {
     // Use the earliest available sample as rolling window origin
     final start = _samples.first.time;
 
-    // Show a live partial baseline from all current samples
-    // (no quality/stability filter – just the running mean).
-    if (_samples.isNotEmpty) {
+    // During active calibration: continuously update baseline (running mean)
+    // and trigger (mean + 3*std) from all current samples – no quality filter.
+    if (_isCalibrating && _samples.isNotEmpty) {
       final hrs = _samples.map((s) => s.heartRate).toList();
       final mean = hrs.reduce((a, b) => a + b) / hrs.length;
+      var sumSq = 0.0;
+      for (final hr in hrs) {
+        final d = hr - mean;
+        sumSq += d * d;
+      }
+      final std = hrs.length > 1 ? sqrt(sumSq / hrs.length) : 0.0;
+      final liveTrigger = mean + 3 * std;
       if (_latestResult != null) {
         _latestResult!.baselineHeartRate = mean;
+        _latestResult!.triggerThreshold = liveTrigger;
+        _latestResult!.windowStd = std;
       } else {
         _latestResult = CalibrationResult(
           baselineHeartRate: mean,
-          triggerThreshold: mean + 10,
-          windowStd: 0,
+          triggerThreshold: liveTrigger,
+          windowStd: std,
         );
       }
       onResultUpdated?.call(_latestResult);
@@ -170,16 +179,28 @@ class HrCalibration {
 
     // Only override the live partial result when a validated window is found.
     if (bestResult != null) {
-      final changed = _latestResult == null ||
-          (bestResult.baselineHeartRate - _latestResult!.baselineHeartRate)
-                  .abs() >
-              0.05 ||
-          (bestResult.triggerThreshold - _latestResult!.triggerThreshold)
-                  .abs() >
-              0.05;
-      if (changed) {
-        _latestResult = bestResult;
-        onResultUpdated?.call(bestResult);
+      if (_isCalibrating) {
+        // During calibration: update both baseline and trigger
+        final changed = _latestResult == null ||
+            (bestResult.baselineHeartRate - _latestResult!.baselineHeartRate)
+                    .abs() >
+                0.05 ||
+            (bestResult.triggerThreshold - _latestResult!.triggerThreshold)
+                    .abs() >
+                0.05;
+        if (changed) {
+          _latestResult = bestResult;
+          onResultUpdated?.call(bestResult);
+        }
+      } else if (_latestResult != null) {
+        // Post-calibration: keep established/user-edited baseline;
+        // only update the trigger relative to it.
+        final updatedTrigger =
+            _latestResult!.baselineHeartRate + 3 * bestResult.windowStd;
+        if ((updatedTrigger - _latestResult!.triggerThreshold).abs() > 0.05) {
+          _latestResult!.triggerThreshold = updatedTrigger;
+          onResultUpdated?.call(_latestResult);
+        }
       }
     }
   }
