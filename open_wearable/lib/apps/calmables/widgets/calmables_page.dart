@@ -1126,7 +1126,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      'Heat Output',
+                      'Intensity',
                       style: Theme.of(context)
                           .textTheme
                           .bodyMedium
@@ -1223,7 +1223,7 @@ class _CalmablesPageState extends State<CalmablesPage> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      'Heat Output',
+                      'Intensity',
                       style: Theme.of(context)
                           .textTheme
                           .bodyMedium
