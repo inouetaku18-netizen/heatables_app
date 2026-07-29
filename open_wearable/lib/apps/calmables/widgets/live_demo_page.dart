@@ -10,6 +10,29 @@ import 'package:open_wearable/apps/calmables/widgets/rolling_hr_chart.dart';
 /// How the thermal feedback of the current demo run was started.
 enum DemoTriggerSource { automatic, demo }
 
+/// Survey answers and key metrics of one completed demo run.
+class DemoSurveyResult {
+  final DateTime timestamp;
+  final String intensity;
+  final double? baseline;
+  final double? peakHr;
+  final DemoTriggerSource? triggerSource;
+  final String? warmthRating;
+  final String? relaxationRating;
+  final String? preferredLevel;
+
+  const DemoSurveyResult({
+    required this.timestamp,
+    required this.intensity,
+    this.baseline,
+    this.peakHr,
+    this.triggerSource,
+    this.warmthRating,
+    this.relaxationRating,
+    this.preferredLevel,
+  });
+}
+
 enum _DemoStep {
   ready,
   baseline,
@@ -62,6 +85,10 @@ class LiveDemoPage extends StatefulWidget {
     required this.onSendToCalmables,
   });
 
+  /// Survey results collected across all demo runs of this app session.
+  /// Only shown when leaving the demo flow.
+  static final List<DemoSurveyResult> sessionResults = [];
+
   @override
   State<LiveDemoPage> createState() => _LiveDemoPageState();
 }
@@ -76,9 +103,11 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   static const int _pwmLow = 70;
   static const int _pwmMedium = 130;
   static const int _pwmHigh = 200;
-  static const int _triggerPwm = _pwmMedium;
 
-  static const Duration _breathingCycle = Duration(milliseconds: 2200);
+  // Guided breathing ramps from 30 breaths/min up to 60 breaths/min over
+  // the breathing phase.
+  static const double _breathStartHz = 0.5;
+  static const double _breathEndHz = 1.0;
   static const Duration _breathingMaxDuration = Duration(seconds: 10);
   static const Duration _demoTriggerRevealDelay = Duration(seconds: 18);
   static const Duration _relaxationDuration = Duration(seconds: 25);
@@ -110,6 +139,8 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   String? _preferredLevel;
   bool _demoTriggerAvailable = false;
   bool _recalibrateOnBaselineEntry = false;
+  int _selectedIntensityIndex = 1;
+  bool _resultSaved = false;
 
   // Comparison state
   int _comparisonLevel = 0;
@@ -211,7 +242,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     if (_thermalStarted) return;
     _thermalStarted = true;
     _triggerSource = source;
-    unawaited(_setPwm(_triggerPwm));
+    unawaited(_setPwm(_comparisonPwm[_selectedIntensityIndex]));
   }
 
   // ── State machine transitions ──────────────────────────────────────────────
@@ -235,9 +266,46 @@ class _LiveDemoPageState extends State<LiveDemoPage>
           _welcomeBackDuration,
           () => _goTo(_DemoStep.warmthRating),
         );
+      case _DemoStep.summary:
+        _saveSurveyResult();
       default:
         break;
     }
+  }
+
+  void _saveSurveyResult() {
+    if (_resultSaved) return;
+    if (_warmthRating == null && _relaxationRating == null) return;
+    _resultSaved = true;
+    LiveDemoPage.sessionResults.add(
+      DemoSurveyResult(
+        timestamp: DateTime.now(),
+        intensity: _comparisonLevels[_selectedIntensityIndex],
+        baseline: widget.calibration.latestResult?.baselineHeartRate,
+        peakHr: _peakHr,
+        triggerSource: _triggerSource,
+        warmthRating: _warmthRating,
+        relaxationRating: _relaxationRating,
+        preferredLevel: _preferredLevel,
+      ),
+    );
+  }
+
+  /// Leaving the flow: capture an unfinished run's ratings, then show the
+  /// collected survey results (only visible outside the demo flow).
+  void _exitDemo() {
+    _saveSurveyResult();
+    if (LiveDemoPage.sessionResults.isEmpty) {
+      Navigator.of(context).pop();
+      return;
+    }
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => SurveyResultsPage(
+          results: List.of(LiveDemoPage.sessionResults),
+        ),
+      ),
+    );
   }
 
   void _enterBaseline() {
@@ -260,14 +328,19 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   void _enterBreathing() {
     _trackPeak = true;
     _breathingController?.dispose();
+    // One controller spans the whole breathing phase; the pulse widget derives
+    // the accelerating breath cycle from its progress.
     _breathingController = AnimationController(
       vsync: this,
-      duration: _breathingCycle,
-    )..repeat();
-    _stepTimer = Timer(_breathingMaxDuration, () {
-      // Breathing phase over without a trigger → keep monitoring the real HR.
-      _goTo(_DemoStep.monitoring);
-    });
+      duration: _breathingMaxDuration,
+    )
+      ..addStatusListener((status) {
+        if (status == AnimationStatus.completed) {
+          // Breathing phase over without a trigger → keep monitoring real HR.
+          _goTo(_DemoStep.monitoring);
+        }
+      })
+      ..forward();
   }
 
   void _enterMonitoring() {
@@ -311,8 +384,17 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   void _onRelaxationComplete() {
     unawaited(_setPwm(0));
     _trackPeak = false;
-    unawaited(HapticFeedback.lightImpact());
+    unawaited(_playReturnHaptic());
     _goTo(_DemoStep.welcomeBack);
+  }
+
+  /// A short pattern of pulses is easier to notice than a single click,
+  /// while still feeling gentle.
+  Future<void> _playReturnHaptic() async {
+    for (var i = 0; i < 3; i++) {
+      await HapticFeedback.mediumImpact();
+      await Future<void>.delayed(const Duration(milliseconds: 220));
+    }
   }
 
   // ── Ratings ────────────────────────────────────────────────────────────────
@@ -397,6 +479,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
       _peakHr = null;
       _trackPeak = false;
       _demoTriggerAvailable = false;
+      _resultSaved = false;
       _comparisonLevel = 0;
       _comparisonPhase = _ComparisonPhase.idle;
       // Next participant gets a fresh personal baseline; BLE connections
@@ -443,12 +526,9 @@ class _LiveDemoPageState extends State<LiveDemoPage>
         _step == _DemoStep.welcomeBack;
 
     return PopScope(
-      canPop: true,
+      canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (didPop && _currentPwm != 0) {
-          unawaited(widget.onSendToCalmables([0]));
-          _currentPwm = 0;
-        }
+        if (!didPop) _exitDemo();
       },
       child: Scaffold(
         backgroundColor: Theme.of(context).colorScheme.surface,
@@ -461,7 +541,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
                 leading: IconButton(
                   icon: const Icon(Icons.close_rounded),
                   tooltip: 'Exit demo',
-                  onPressed: () => Navigator.of(context).maybePop(),
+                  onPressed: _exitDemo,
                 ),
               ),
         body: SafeArea(
@@ -492,14 +572,15 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     final calmablesConnected = widget.isCalmablesConnected();
 
     return _ScreenFrame(
+      scrollable: true,
       footer: _PrimaryButton(
         label: 'Start Demo',
         onPressed: _hrSignalActive ? () => _goTo(_DemoStep.baseline) : null,
       ),
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          const SizedBox(height: 12),
           Center(
             child: Container(
               width: 84,
@@ -511,7 +592,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
               child: const Icon(Icons.spa_rounded, size: 42, color: _accent),
             ),
           ),
-          const SizedBox(height: 28),
+          const SizedBox(height: 24),
           Text(
             'Calmables',
             textAlign: TextAlign.center,
@@ -528,7 +609,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
               color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
-          const SizedBox(height: 40),
+          const SizedBox(height: 32),
           _StatusRow(
             icon: Icons.favorite_rounded,
             label: widget.hrSourceName,
@@ -551,6 +632,28 @@ class _LiveDemoPageState extends State<LiveDemoPage>
                     child: const Text('Connect'),
                   ),
           ),
+          const SizedBox(height: 28),
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 10),
+            child: Text(
+              'Warmth intensity',
+              style: theme.textTheme.labelLarge?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          for (var i = 0; i < _comparisonLevels.length; i++) ...[
+            _IntensityOption(
+              label: _comparisonLevels[i],
+              selected: _selectedIntensityIndex == i,
+              onTap: () {
+                unawaited(HapticFeedback.selectionClick());
+                setState(() => _selectedIntensityIndex = i);
+              },
+            ),
+            const SizedBox(height: 10),
+          ],
         ],
       ),
     );
@@ -768,6 +871,9 @@ class _LiveDemoPageState extends State<LiveDemoPage>
               child: _BreathingPulse(
                 controller: _breathingController!,
                 reducedMotion: _reducedMotion,
+                totalSeconds: _breathingMaxDuration.inSeconds.toDouble(),
+                startHz: _breathStartHz,
+                endHz: _breathEndHz,
               ),
             ),
           ),
@@ -1273,6 +1379,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
                   null => '--',
                 }
               ),
+              ('Intensity', _comparisonLevels[_selectedIntensityIndex]),
               ('Warmth rating', _warmthRating ?? '--'),
               ('Relaxation rating', _relaxationRating ?? '--'),
               if (_preferredLevel != null)
@@ -1404,6 +1511,60 @@ class _OptionButton extends StatelessWidget {
           ),
         ),
         child: Text(label),
+      ),
+    );
+  }
+}
+
+class _IntensityOption extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _IntensityOption({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    const accent = Color(0xFF009682);
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: selected
+              ? accent.withValues(alpha: 0.08)
+              : theme.colorScheme.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: selected ? accent : Colors.transparent,
+            width: 1.5,
+          ),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                label,
+                style: theme.textTheme.bodyLarge?.copyWith(
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                ),
+              ),
+            ),
+            Icon(
+              selected
+                  ? Icons.check_circle_rounded
+                  : Icons.radio_button_unchecked_rounded,
+              size: 22,
+              color: selected ? accent : theme.colorScheme.outlineVariant,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1670,15 +1831,100 @@ class _SummaryCard extends StatelessWidget {
   }
 }
 
+// ── Survey results (visible only after leaving the demo flow) ────────────────
+
+class SurveyResultsPage extends StatelessWidget {
+  final List<DemoSurveyResult> results;
+
+  const SurveyResultsPage({super.key, required this.results});
+
+  String _fmtTime(DateTime t) =>
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Scaffold(
+      backgroundColor: theme.colorScheme.surface,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        title: const Text('Survey results'),
+      ),
+      body: SafeArea(
+        child: ListView.separated(
+          padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+          itemCount: results.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 18),
+          itemBuilder: (context, index) {
+            final r = results[index];
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(left: 4, bottom: 8),
+                  child: Text(
+                    'Run ${index + 1} · ${_fmtTime(r.timestamp)}',
+                    style: theme.textTheme.labelLarge?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                _SummaryCard(
+                  rows: [
+                    ('Intensity', r.intensity),
+                    (
+                      'Trigger',
+                      switch (r.triggerSource) {
+                        DemoTriggerSource.automatic => 'Automatic',
+                        DemoTriggerSource.demo => 'Demo',
+                        null => '--',
+                      }
+                    ),
+                    (
+                      'Baseline',
+                      r.baseline != null
+                          ? '${r.baseline!.toStringAsFixed(0)} BPM'
+                          : '--'
+                    ),
+                    (
+                      'Peak HR',
+                      r.peakHr != null
+                          ? '${r.peakHr!.toStringAsFixed(0)} BPM'
+                          : '--'
+                    ),
+                    ('Warmth rating', r.warmthRating ?? '--'),
+                    ('Relaxation rating', r.relaxationRating ?? '--'),
+                    if (r.preferredLevel != null)
+                      ('Preferred warmth level', r.preferredLevel!),
+                  ],
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
 // ── Breathing pulse ───────────────────────────────────────────────────────────
 
 class _BreathingPulse extends StatelessWidget {
   final AnimationController controller;
   final bool reducedMotion;
+  final double totalSeconds;
+  final double startHz;
+  final double endHz;
 
   const _BreathingPulse({
     required this.controller,
     required this.reducedMotion,
+    required this.totalSeconds,
+    required this.startHz,
+    required this.endHz,
   });
 
   @override
@@ -1687,9 +1933,13 @@ class _BreathingPulse extends StatelessWidget {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
-        final t = controller.value;
-        final inhale = t < 0.5;
-        final phase = inhale ? t / 0.5 : (t - 0.5) / 0.5;
+        // The breath rate ramps linearly from startHz to endHz over the
+        // phase; integrating gives the accumulated breath-cycle phase.
+        final t = controller.value * totalSeconds;
+        final cycles = startHz * t + (endHz - startHz) * t * t / (2 * totalSeconds);
+        final frac = cycles - cycles.floorToDouble();
+        final inhale = frac < 0.5;
+        final phase = inhale ? frac / 0.5 : (frac - 0.5) / 0.5;
         final curved = Curves.easeInOut.transform(phase);
         final scale = reducedMotion
             ? 0.9

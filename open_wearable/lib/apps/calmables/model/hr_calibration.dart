@@ -33,6 +33,12 @@ class HrCalibration {
   static const double _minGoodQualityRatio = 0.80;
   static const double _maxStabilityCoefficient = 0.10;
 
+  /// Computed trigger thresholds sit at least this far above the baseline.
+  static const double minTriggerDelta = 15.0;
+
+  static double _computedTrigger(double baseline, double std) =>
+      max(baseline + minTriggerDelta, baseline + 3 * std);
+
   StreamSubscription<double?>? _hrSubscription;
   StreamSubscription<PpgSignalQuality>? _qualitySubscription;
 
@@ -136,7 +142,7 @@ class HrCalibration {
         sumSq += d * d;
       }
       final std = hrs.length > 1 ? sqrt(sumSq / hrs.length) : 0.0;
-      final liveTrigger = mean + 3 * std;
+      final liveTrigger = _computedTrigger(mean, std);
       if (_latestResult != null) {
         _latestResult!.baselineHeartRate = mean;
         _latestResult!.triggerThreshold = liveTrigger;
@@ -195,8 +201,10 @@ class HrCalibration {
       } else if (_latestResult != null) {
         // Post-calibration: keep established/user-edited baseline;
         // only update the trigger relative to it.
-        final updatedTrigger =
-            _latestResult!.baselineHeartRate + 3 * bestResult.windowStd;
+        final updatedTrigger = _computedTrigger(
+          _latestResult!.baselineHeartRate,
+          bestResult.windowStd,
+        );
         if ((updatedTrigger - _latestResult!.triggerThreshold).abs() > 0.05) {
           _latestResult!.triggerThreshold = updatedTrigger;
           onResultUpdated?.call(_latestResult);
@@ -229,7 +237,7 @@ class HrCalibration {
 
     return CalibrationResult(
       baselineHeartRate: mean,
-      triggerThreshold: mean + 3 * std,
+      triggerThreshold: _computedTrigger(mean, std),
       windowStd: std,
     );
   }
