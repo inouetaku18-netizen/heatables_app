@@ -19,7 +19,6 @@ class DemoSurveyResult {
   final DemoTriggerSource? triggerSource;
   final String? warmthRating;
   final String? relaxationRating;
-  final String? preferredLevel;
 
   const DemoSurveyResult({
     required this.timestamp,
@@ -29,29 +28,22 @@ class DemoSurveyResult {
     this.triggerSource,
     this.warmthRating,
     this.relaxationRating,
-    this.preferredLevel,
   });
 }
 
 enum _DemoStep {
   ready,
+  intensitySelect,
   baseline,
   activationIntro,
   breathing,
-  monitoring,
-  triggerConfirm,
   relaxationIntro,
   relaxationRunning,
   welcomeBack,
   warmthRating,
   relaxationRating,
-  comparisonOffer,
-  comparisonRunning,
-  preferenceRating,
   summary,
 }
-
-enum _ComparisonPhase { idle, heating, cooldown }
 
 /// Guided conference demo flow.
 ///
@@ -104,19 +96,17 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   static const int _pwmMedium = 130;
   static const int _pwmHigh = 200;
 
-  // Guided breathing ramps from 30 breaths/min up to 60 breaths/min over
+  // Guided breathing ramps from 30 breaths/min up to 50 breaths/min over
   // the breathing phase.
-  static const double _breathStartHz = 0.5;
-  static const double _breathEndHz = 1.0;
-  static const Duration _breathingMaxDuration = Duration(seconds: 10);
-  static const Duration _demoTriggerRevealDelay = Duration(seconds: 18);
-  static const Duration _relaxationDuration = Duration(seconds: 25);
+  static const double _breathStartHz = 30 / 60;
+  static const double _breathEndHz = 50 / 60;
+  static const Duration _breathRampDuration = Duration(seconds: 10);
+  static const Duration _demoTriggerRevealDelay = Duration(seconds: 20);
+  static const Duration _relaxEndOptionDelay = Duration(seconds: 30);
   static const Duration _welcomeBackDuration = Duration(milliseconds: 1800);
-  static const int _comparisonHeatSeconds = 10;
-  static const int _comparisonCooldownSeconds = 6;
 
-  static const List<String> _comparisonLevels = ['Low', 'Medium', 'High'];
-  static const List<int> _comparisonPwm = [_pwmLow, _pwmMedium, _pwmHigh];
+  static const List<String> _intensityLevels = ['Low', 'Medium', 'High'];
+  static const List<int> _intensityPwm = [_pwmLow, _pwmMedium, _pwmHigh];
 
   _DemoStep _step = _DemoStep.ready;
 
@@ -136,21 +126,29 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   bool _trackPeak = false;
   String? _warmthRating;
   String? _relaxationRating;
-  String? _preferredLevel;
   bool _demoTriggerAvailable = false;
   bool _recalibrateOnBaselineEntry = false;
   int _selectedIntensityIndex = 1;
   bool _resultSaved = false;
+  int _aboveThresholdCount = 0;
+  DateTime? _breathingStartedAt;
 
-  // Comparison state
-  int _comparisonLevel = 0;
-  _ComparisonPhase _comparisonPhase = _ComparisonPhase.idle;
-  int _comparisonRemaining = 0;
+  // Relaxation: heating stays active until the (smoothed) HR falls back
+  // below the deactivation threshold — the same hysteresis value the
+  // HR-based autopilot mode uses. Armed once HR has been elevated so a
+  // demo-triggered run does not end immediately.
+  bool _relaxDeactivationArmed = false;
+  int _belowThresholdCount = 0;
+  bool _relaxEndAvailable = false;
+
+  /// Consecutive HR samples above threshold required to fire the trigger, so
+  /// a single spike/artifact in the smoothed HR cannot end the breathing
+  /// phase prematurely.
+  static const int _triggerDebounceSamples = 3;
 
   // Timers & animation
   Timer? _stepTimer;
   Timer? _demoRevealTimer;
-  Timer? _comparisonTimer;
   Timer? _uiTick;
   AnimationController? _breathingController;
   AnimationController? _relaxationController;
@@ -186,8 +184,6 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     _stepTimer = null;
     _demoRevealTimer?.cancel();
     _demoRevealTimer = null;
-    _comparisonTimer?.cancel();
-    _comparisonTimer = null;
     _uiTick?.cancel();
     _uiTick = null;
   }
@@ -203,13 +199,38 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     }
 
     // Continuous evaluation of the existing trigger condition (same condition
-    // as the HR-based autopilot mode) — never waits for the breathing timer.
-    if (!_thermalStarted &&
-        (_step == _DemoStep.breathing || _step == _DemoStep.monitoring)) {
+    // as the HR-based autopilot mode). Breathing has no time limit — it ends
+    // only when the trigger fires (automatic or demo).
+    if (!_thermalStarted && _step == _DemoStep.breathing) {
       final result = widget.calibration.latestResult;
       if (result != null && bpm > result.triggerThreshold) {
-        _onAutomaticTrigger();
-        return;
+        _aboveThresholdCount++;
+        if (_aboveThresholdCount >= _triggerDebounceSamples) {
+          _onAutomaticTrigger();
+          return;
+        }
+      } else {
+        _aboveThresholdCount = 0;
+      }
+    }
+
+    // During relaxation, heating stays on until HR has recovered below the
+    // deactivation threshold (same hysteresis as the autopilot mode).
+    if (_step == _DemoStep.relaxationRunning) {
+      final result = widget.calibration.latestResult;
+      if (result != null) {
+        final deactivateThreshold = result.baselineHeartRate +
+            0.2 * (result.triggerThreshold - result.baselineHeartRate);
+        if (bpm >= deactivateThreshold) {
+          _relaxDeactivationArmed = true;
+          _belowThresholdCount = 0;
+        } else if (_relaxDeactivationArmed) {
+          _belowThresholdCount++;
+          if (_belowThresholdCount >= _triggerDebounceSamples) {
+            _onRelaxationComplete();
+            return;
+          }
+        }
       }
     }
     // Throttle UI rebuilds; the trigger evaluation above runs per sample.
@@ -242,7 +263,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     if (_thermalStarted) return;
     _thermalStarted = true;
     _triggerSource = source;
-    unawaited(_setPwm(_comparisonPwm[_selectedIntensityIndex]));
+    unawaited(_setPwm(_intensityPwm[_selectedIntensityIndex]));
   }
 
   // ── State machine transitions ──────────────────────────────────────────────
@@ -253,12 +274,14 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     setState(() => _step = step);
 
     switch (step) {
+      case _DemoStep.intensitySelect:
+        // Preview the pre-selected level right away so tapping is only
+        // needed to switch levels.
+        unawaited(_setPwm(_intensityPwm[_selectedIntensityIndex]));
       case _DemoStep.baseline:
         _enterBaseline();
       case _DemoStep.breathing:
         _enterBreathing();
-      case _DemoStep.monitoring:
-        _enterMonitoring();
       case _DemoStep.relaxationRunning:
         _enterRelaxation();
       case _DemoStep.welcomeBack:
@@ -280,13 +303,12 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     LiveDemoPage.sessionResults.add(
       DemoSurveyResult(
         timestamp: DateTime.now(),
-        intensity: _comparisonLevels[_selectedIntensityIndex],
+        intensity: _intensityLevels[_selectedIntensityIndex],
         baseline: widget.calibration.latestResult?.baselineHeartRate,
         peakHr: _peakHr,
         triggerSource: _triggerSource,
         warmthRating: _warmthRating,
         relaxationRating: _relaxationRating,
-        preferredLevel: _preferredLevel,
       ),
     );
   }
@@ -327,23 +349,18 @@ class _LiveDemoPageState extends State<LiveDemoPage>
 
   void _enterBreathing() {
     _trackPeak = true;
+    _aboveThresholdCount = 0;
+    _breathingStartedAt = DateTime.now();
     _breathingController?.dispose();
-    // One controller spans the whole breathing phase; the pulse widget derives
-    // the accelerating breath cycle from its progress.
+    // Pure ticker driving the pulse; the widget derives the ramping breath
+    // cycle from the elapsed time. Breathing has no time limit — it ends
+    // only when the trigger fires.
     _breathingController = AnimationController(
       vsync: this,
-      duration: _breathingMaxDuration,
-    )
-      ..addStatusListener((status) {
-        if (status == AnimationStatus.completed) {
-          // Breathing phase over without a trigger → keep monitoring real HR.
-          _goTo(_DemoStep.monitoring);
-        }
-      })
-      ..forward();
-  }
-
-  void _enterMonitoring() {
+      duration: const Duration(seconds: 1),
+    )..repeat();
+    // If the trigger has not fired after a while, reveal the optional
+    // Demo Trigger fallback below the breathing visual.
     _demoTriggerAvailable = false;
     _demoRevealTimer = Timer(_demoTriggerRevealDelay, () {
       if (mounted) setState(() => _demoTriggerAvailable = true);
@@ -351,12 +368,13 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   }
 
   void _onAutomaticTrigger() {
-    // Immediate: stop the breathing visual, cancel remaining timers and start
-    // the thermal feedback through the existing safe control path.
+    // Immediate: stop the breathing visual, cancel remaining timers, start
+    // the thermal feedback through the existing safe control path and go
+    // straight to the relaxation experience.
     _cancelTimers();
     _breathingController?.stop();
     _startThermalFeedback(DemoTriggerSource.automatic);
-    if (mounted) setState(() => _step = _DemoStep.triggerConfirm);
+    if (mounted) setState(() => _step = _DemoStep.relaxationIntro);
   }
 
   void _onDemoTrigger() {
@@ -364,24 +382,27 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     // thermal pathway and records the source as "demo".
     _cancelTimers();
     _startThermalFeedback(DemoTriggerSource.demo);
-    _goTo(_DemoStep.triggerConfirm);
+    _goTo(_DemoStep.relaxationIntro);
   }
 
   void _enterRelaxation() {
+    _relaxDeactivationArmed = false;
+    _belowThresholdCount = 0;
+    _relaxEndAvailable = false;
     _relaxationController?.dispose();
+    // Slow ambient cycle for the visual — relaxation is not time-limited;
+    // it ends when HR recovers (see _onHeartRate) or via the manual option.
     _relaxationController = AnimationController(
       vsync: this,
-      duration: _relaxationDuration,
-    )
-      ..addStatusListener((status) {
-        if (status == AnimationStatus.completed) {
-          _onRelaxationComplete();
-        }
-      })
-      ..forward();
+      duration: const Duration(seconds: 6),
+    )..repeat();
+    _stepTimer = Timer(_relaxEndOptionDelay, () {
+      if (mounted) setState(() => _relaxEndAvailable = true);
+    });
   }
 
   void _onRelaxationComplete() {
+    if (_step != _DemoStep.relaxationRunning) return;
     unawaited(_setPwm(0));
     _trackPeak = false;
     unawaited(_playReturnHaptic());
@@ -408,58 +429,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   void _selectRelaxationRating(String value) {
     unawaited(HapticFeedback.selectionClick());
     _relaxationRating = value;
-    _goTo(_DemoStep.comparisonOffer);
-  }
-
-  void _selectPreferredLevel(String value) {
-    unawaited(HapticFeedback.selectionClick());
-    _preferredLevel = value;
     _goTo(_DemoStep.summary);
-  }
-
-  // ── Intensity comparison ───────────────────────────────────────────────────
-
-  void _startComparison() {
-    _comparisonLevel = 0;
-    _comparisonPhase = _ComparisonPhase.idle;
-    _goTo(_DemoStep.comparisonRunning);
-  }
-
-  void _startComparisonLevel() {
-    // Explicit start per level; no overlapping or stacked heating commands.
-    if (_comparisonPhase != _ComparisonPhase.idle || _currentPwm != 0) return;
-    setState(() {
-      _comparisonPhase = _ComparisonPhase.heating;
-      _comparisonRemaining = _comparisonHeatSeconds;
-    });
-    unawaited(_setPwm(_comparisonPwm[_comparisonLevel]));
-    _comparisonTimer?.cancel();
-    _comparisonTimer = Timer.periodic(const Duration(seconds: 1), (t) {
-      if (!mounted) {
-        t.cancel();
-        return;
-      }
-      setState(() => _comparisonRemaining--);
-      if (_comparisonRemaining > 0) return;
-      if (_comparisonPhase == _ComparisonPhase.heating) {
-        // Level done → full stop, then cooldown before the next level.
-        unawaited(_setPwm(0));
-        setState(() {
-          _comparisonPhase = _ComparisonPhase.cooldown;
-          _comparisonRemaining = _comparisonCooldownSeconds;
-        });
-      } else {
-        t.cancel();
-        if (_comparisonLevel < _comparisonLevels.length - 1) {
-          setState(() {
-            _comparisonLevel++;
-            _comparisonPhase = _ComparisonPhase.idle;
-          });
-        } else {
-          _goTo(_DemoStep.preferenceRating);
-        }
-      }
-    });
   }
 
   // ── Reset ──────────────────────────────────────────────────────────────────
@@ -475,13 +445,15 @@ class _LiveDemoPageState extends State<LiveDemoPage>
       _thermalStarted = false;
       _warmthRating = null;
       _relaxationRating = null;
-      _preferredLevel = null;
       _peakHr = null;
       _trackPeak = false;
       _demoTriggerAvailable = false;
       _resultSaved = false;
-      _comparisonLevel = 0;
-      _comparisonPhase = _ComparisonPhase.idle;
+      _aboveThresholdCount = 0;
+      _breathingStartedAt = null;
+      _relaxDeactivationArmed = false;
+      _belowThresholdCount = 0;
+      _relaxEndAvailable = false;
       // Next participant gets a fresh personal baseline; BLE connections
       // are intentionally preserved.
       _recalibrateOnBaselineEntry = true;
@@ -494,11 +466,10 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   Widget build(BuildContext context) {
     final body = switch (_step) {
       _DemoStep.ready => _buildReady(),
+      _DemoStep.intensitySelect => _buildIntensitySelect(),
       _DemoStep.baseline => _buildBaseline(),
       _DemoStep.activationIntro => _buildActivationIntro(),
       _DemoStep.breathing => _buildBreathing(),
-      _DemoStep.monitoring => _buildMonitoring(),
-      _DemoStep.triggerConfirm => _buildTriggerConfirm(),
       _DemoStep.relaxationIntro => _buildRelaxationIntro(),
       _DemoStep.relaxationRunning => _buildRelaxationRunning(),
       _DemoStep.welcomeBack => _buildWelcomeBack(),
@@ -511,13 +482,6 @@ class _LiveDemoPageState extends State<LiveDemoPage>
           question: 'Did the thermal feedback feel relaxing?',
           options: const ['Not really', 'Somewhat', 'Yes'],
           onSelected: _selectRelaxationRating,
-        ),
-      _DemoStep.comparisonOffer => _buildComparisonOffer(),
-      _DemoStep.comparisonRunning => _buildComparisonRunning(),
-      _DemoStep.preferenceRating => _buildRatingScreen(
-          question: 'Which warmth level did you prefer?',
-          options: const ['Low', 'Medium', 'High', 'No preference'],
-          onSelected: _selectPreferredLevel,
         ),
       _DemoStep.summary => _buildSummary(),
     };
@@ -575,7 +539,8 @@ class _LiveDemoPageState extends State<LiveDemoPage>
       scrollable: true,
       footer: _PrimaryButton(
         label: 'Start Demo',
-        onPressed: _hrSignalActive ? () => _goTo(_DemoStep.baseline) : null,
+        onPressed:
+            _hrSignalActive ? () => _goTo(_DemoStep.intensitySelect) : null,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -632,24 +597,72 @@ class _LiveDemoPageState extends State<LiveDemoPage>
                     child: const Text('Connect'),
                   ),
           ),
-          const SizedBox(height: 28),
-          Padding(
-            padding: const EdgeInsets.only(left: 4, bottom: 10),
-            child: Text(
-              'Warmth intensity',
-              style: theme.textTheme.labelLarge?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-                fontWeight: FontWeight.w600,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildIntensitySelect() {
+    final theme = Theme.of(context);
+    return _ScreenFrame(
+      scrollable: true,
+      footer: _PrimaryButton(
+        label: 'Continue',
+        onPressed: () {
+          // Stop the preview heating before moving on.
+          unawaited(_setPwm(0));
+          _goTo(_DemoStep.baseline);
+        },
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const SizedBox(height: 12),
+          Center(
+            child: Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                color: _accent.withValues(alpha: 0.10),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.thermostat_rounded,
+                size: 36,
+                color: _accent,
               ),
             ),
           ),
-          for (var i = 0; i < _comparisonLevels.length; i++) ...[
+          const SizedBox(height: 24),
+          Text(
+            'Warmth intensity',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.headlineSmall?.copyWith(
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.3,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Tap a level to feel it. The selected level is used for the '
+            'thermal feedback.',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 28),
+          for (var i = 0; i < _intensityLevels.length; i++) ...[
             _IntensityOption(
-              label: _comparisonLevels[i],
+              label: _intensityLevels[i],
               selected: _selectedIntensityIndex == i,
               onTap: () {
                 unawaited(HapticFeedback.selectionClick());
                 setState(() => _selectedIntensityIndex = i);
+                // Preview the tapped level through the normal control path;
+                // it is switched off again when leaving this screen.
+                unawaited(_setPwm(_intensityPwm[i]));
               },
             ),
             const SizedBox(height: 10),
@@ -862,42 +875,6 @@ class _LiveDemoPageState extends State<LiveDemoPage>
 
   Widget _buildBreathing() {
     return _ScreenFrame(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _hrAndThresholdRow(),
-          Expanded(
-            child: Center(
-              child: _BreathingPulse(
-                controller: _breathingController!,
-                reducedMotion: _reducedMotion,
-                totalSeconds: _breathingMaxDuration.inSeconds.toDouble(),
-                startHz: _breathStartHz,
-                endHz: _breathEndHz,
-              ),
-            ),
-          ),
-          _ChartCard(
-            child: SizedBox(
-              height: 100,
-              child: RollingHrChart(
-                rawHrStream: widget.rawHrStream,
-                smoothedHrStream: widget.smoothedHrStream,
-                timestampExponent: widget.timestampExponent,
-                timeWindow: 60,
-                baseline: widget.calibration.latestResult?.baselineHeartRate,
-                threshold: widget.calibration.latestResult?.triggerThreshold,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMonitoring() {
-    final theme = Theme.of(context);
-    return _ScreenFrame(
       footer: AnimatedOpacity(
         duration: _reducedMotion
             ? Duration.zero
@@ -915,35 +892,18 @@ class _LiveDemoPageState extends State<LiveDemoPage>
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _hrAndThresholdRow(),
-          const SizedBox(height: 32),
-          Text(
-            'You can breathe normally again',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.3,
-            ),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            'Calmables keeps monitoring your heart rate.',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(height: 24),
-          const Center(
-            child: SizedBox(
-              width: 22,
-              height: 22,
-              child: CircularProgressIndicator(
-                strokeWidth: 2.4,
-                valueColor: AlwaysStoppedAnimation<Color>(_accent),
+          Expanded(
+            child: Center(
+              child: _BreathingPulse(
+                controller: _breathingController!,
+                reducedMotion: _reducedMotion,
+                startTime: _breathingStartedAt ?? DateTime.now(),
+                rampSeconds: _breathRampDuration.inSeconds.toDouble(),
+                startHz: _breathStartHz,
+                endHz: _breathEndHz,
               ),
             ),
           ),
-          const Spacer(),
           _ChartCard(
             child: SizedBox(
               height: 120,
@@ -957,97 +917,6 @@ class _LiveDemoPageState extends State<LiveDemoPage>
               ),
             ),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTriggerConfirm() {
-    final theme = Theme.of(context);
-    final isAutomatic = _triggerSource == DemoTriggerSource.automatic;
-    final hr = _currentHr;
-    final threshold = widget.calibration.latestResult?.triggerThreshold;
-
-    return _ScreenFrame(
-      footer: _PrimaryButton(
-        label: 'Continue',
-        onPressed: () => _goTo(_DemoStep.relaxationIntro),
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Center(
-            child: Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                color: _accent.withValues(alpha: 0.10),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(
-                isAutomatic
-                    ? Icons.monitor_heart_rounded
-                    : Icons.play_circle_rounded,
-                size: 36,
-                color: _accent,
-              ),
-            ),
-          ),
-          const SizedBox(height: 28),
-          Text(
-            isAutomatic
-                ? 'Heart rate threshold reached'
-                : 'Thermal feedback started',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.3,
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            isAutomatic
-                ? 'Calmables detected that your heart rate reached your '
-                    'personal activation threshold and started the thermal '
-                    'feedback.'
-                : 'Demo mode started the thermal feedback so you can '
-                    'continue the experience.',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-              height: 1.4,
-            ),
-          ),
-          const SizedBox(height: 32),
-          if (isAutomatic) ...[
-            _FlowStep(
-              icon: Icons.favorite_rounded,
-              label: 'Current HR',
-              value: hr != null && hr.isFinite
-                  ? '${hr.toStringAsFixed(0)} BPM'
-                  : '--',
-            ),
-            const _FlowArrow(),
-            _FlowStep(
-              icon: Icons.flag_rounded,
-              label: 'Threshold reached',
-              value: threshold != null
-                  ? '${threshold.toStringAsFixed(0)} BPM'
-                  : '--',
-            ),
-            const _FlowArrow(),
-            const _FlowStep(
-              icon: Icons.local_fire_department_rounded,
-              label: 'Thermal feedback',
-              value: 'Active',
-            ),
-          ] else
-            const _FlowStep(
-              icon: Icons.local_fire_department_rounded,
-              label: 'Thermal feedback',
-              value: 'Active',
-            ),
         ],
       ),
     );
@@ -1090,6 +959,15 @@ class _LiveDemoPageState extends State<LiveDemoPage>
           ),
           const SizedBox(height: 12),
           Text(
+            'You can breathe normally again.',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodyLarge?.copyWith(
+              fontWeight: FontWeight.w600,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
             'Feel free to close your eyes and focus on the sensation. '
             "We'll gently bring you back in a few moments.",
             textAlign: TextAlign.center,
@@ -1104,14 +982,77 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   }
 
   Widget _buildRelaxationRunning() {
+    final theme = Theme.of(context);
     final controller = _relaxationController;
-    return Center(
-      child: controller == null
-          ? const SizedBox.shrink()
-          : _RelaxationCircle(
-              controller: controller,
-              reducedMotion: _reducedMotion,
+    final hr = _currentHr;
+    return Column(
+      children: [
+        Expanded(
+          child: Center(
+            child: controller == null
+                ? const SizedBox.shrink()
+                : _RelaxationCircle(
+                    controller: controller,
+                    reducedMotion: _reducedMotion,
+                  ),
+          ),
+        ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.favorite_rounded, size: 16, color: _accent),
+            const SizedBox(width: 6),
+            Text(
+              hr != null && hr.isFinite
+                  ? '${hr.toStringAsFixed(0)} BPM'
+                  : '--',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
+              ),
             ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: _ChartCard(
+            child: SizedBox(
+              height: 110,
+              child: RollingHrChart(
+                rawHrStream: widget.rawHrStream,
+                smoothedHrStream: widget.smoothedHrStream,
+                timestampExponent: widget.timestampExponent,
+                timeWindow: 60,
+                baseline: widget.calibration.latestResult?.baselineHeartRate,
+                threshold: widget.calibration.latestResult?.triggerThreshold,
+              ),
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+          child: AnimatedOpacity(
+            duration: _reducedMotion
+                ? Duration.zero
+                : const Duration(milliseconds: 400),
+            opacity: _relaxEndAvailable ? 1 : 0,
+            child: IgnorePointer(
+              ignoring: !_relaxEndAvailable,
+              child: TextButton(
+                onPressed: _onRelaxationComplete,
+                child: Text(
+                  'End relaxation',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -1156,163 +1097,6 @@ class _LiveDemoPageState extends State<LiveDemoPage>
             ),
             const SizedBox(height: 12),
           ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildComparisonOffer() {
-    final theme = Theme.of(context);
-    return _ScreenFrame(
-      footer: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _PrimaryButton(
-            label: 'Start comparison',
-            onPressed: _startComparison,
-          ),
-          TextButton(
-            onPressed: () => _goTo(_DemoStep.summary),
-            child: const Text('Skip'),
-          ),
-        ],
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Center(
-            child: Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                color: _accent.withValues(alpha: 0.10),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.tune_rounded, size: 36, color: _accent),
-            ),
-          ),
-          const SizedBox(height: 28),
-          Text(
-            'Compare warmth levels',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.3,
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'Try a few short thermal levels and choose which feels most '
-            'comfortable.',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-              height: 1.4,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildComparisonRunning() {
-    final theme = Theme.of(context);
-    final level = _comparisonLevels[_comparisonLevel];
-    final isHeating = _comparisonPhase == _ComparisonPhase.heating;
-    final isCooldown = _comparisonPhase == _ComparisonPhase.cooldown;
-
-    return _ScreenFrame(
-      footer: _PrimaryButton(
-        label: 'Start $level warmth',
-        onPressed:
-            _comparisonPhase == _ComparisonPhase.idle && _currentPwm == 0
-                ? _startComparisonLevel
-                : null,
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              for (var i = 0; i < _comparisonLevels.length; i++) ...[
-                if (i > 0) const SizedBox(width: 8),
-                Container(
-                  width: i == _comparisonLevel ? 24 : 8,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    color: i <= _comparisonLevel
-                        ? _accent
-                        : theme.colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
-              ],
-            ],
-          ),
-          const SizedBox(height: 28),
-          Text(
-            '$level warmth',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.3,
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            isHeating
-                ? 'Notice how this level feels.'
-                : isCooldown
-                    ? 'Cooling down before the next level.'
-                    : 'Tap start when you are ready.',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(height: 36),
-          Center(
-            child: SizedBox(
-              width: 120,
-              height: 120,
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  SizedBox(
-                    width: 120,
-                    height: 120,
-                    child: CircularProgressIndicator(
-                      value: isHeating
-                          ? _comparisonRemaining / _comparisonHeatSeconds
-                          : isCooldown
-                              ? _comparisonRemaining /
-                                  _comparisonCooldownSeconds
-                              : 0,
-                      strokeWidth: 5,
-                      strokeCap: StrokeCap.round,
-                      backgroundColor:
-                          theme.colorScheme.surfaceContainerHighest,
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        isCooldown ? const Color(0xFF64B5F6) : _accent,
-                      ),
-                    ),
-                  ),
-                  Icon(
-                    isHeating
-                        ? Icons.local_fire_department_rounded
-                        : isCooldown
-                            ? Icons.ac_unit_rounded
-                            : Icons.thermostat_rounded,
-                    size: 40,
-                    color: isCooldown ? const Color(0xFF64B5F6) : _accent,
-                  ),
-                ],
-              ),
-            ),
-          ),
         ],
       ),
     );
@@ -1379,11 +1163,9 @@ class _LiveDemoPageState extends State<LiveDemoPage>
                   null => '--',
                 }
               ),
-              ('Intensity', _comparisonLevels[_selectedIntensityIndex]),
+              ('Intensity', _intensityLevels[_selectedIntensityIndex]),
               ('Warmth rating', _warmthRating ?? '--'),
               ('Relaxation rating', _relaxationRating ?? '--'),
-              if (_preferredLevel != null)
-                ('Preferred warmth level', _preferredLevel!),
             ],
           ),
         ],
@@ -1719,67 +1501,6 @@ class _ChartCard extends StatelessWidget {
   }
 }
 
-class _FlowStep extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-
-  const _FlowStep({
-    required this.icon,
-    required this.label,
-    required this.value,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, size: 18, color: const Color(0xFF009682)),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              label,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Text(
-            value,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _FlowArrow extends StatelessWidget {
-  const _FlowArrow();
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Icon(
-        Icons.arrow_downward_rounded,
-        size: 16,
-        color: Theme.of(context).colorScheme.onSurfaceVariant,
-      ),
-    );
-  }
-}
-
 class _SummaryCard extends StatelessWidget {
   final List<(String, String)> rows;
 
@@ -1897,8 +1618,6 @@ class SurveyResultsPage extends StatelessWidget {
                     ),
                     ('Warmth rating', r.warmthRating ?? '--'),
                     ('Relaxation rating', r.relaxationRating ?? '--'),
-                    if (r.preferredLevel != null)
-                      ('Preferred warmth level', r.preferredLevel!),
                   ],
                 ),
               ],
@@ -1915,14 +1634,16 @@ class SurveyResultsPage extends StatelessWidget {
 class _BreathingPulse extends StatelessWidget {
   final AnimationController controller;
   final bool reducedMotion;
-  final double totalSeconds;
+  final DateTime startTime;
+  final double rampSeconds;
   final double startHz;
   final double endHz;
 
   const _BreathingPulse({
     required this.controller,
     required this.reducedMotion,
-    required this.totalSeconds,
+    required this.startTime,
+    required this.rampSeconds,
     required this.startHz,
     required this.endHz,
   });
@@ -1933,24 +1654,32 @@ class _BreathingPulse extends StatelessWidget {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
-        // The breath rate ramps linearly from startHz to endHz over the
-        // phase; integrating gives the accumulated breath-cycle phase.
-        final t = controller.value * totalSeconds;
-        final cycles = startHz * t + (endHz - startHz) * t * t / (2 * totalSeconds);
+        // The breath rate ramps linearly from startHz to endHz over
+        // rampSeconds and then holds endHz; integrating the rate gives the
+        // accumulated breath-cycle phase.
+        final t =
+            DateTime.now().difference(startTime).inMilliseconds / 1000.0;
+        final double cycles;
+        if (t < rampSeconds) {
+          cycles = startHz * t + (endHz - startHz) * t * t / (2 * rampSeconds);
+        } else {
+          cycles = (startHz + endHz) * rampSeconds / 2 +
+              endHz * (t - rampSeconds);
+        }
         final frac = cycles - cycles.floorToDouble();
         final inhale = frac < 0.5;
         final phase = inhale ? frac / 0.5 : (frac - 0.5) / 0.5;
         final curved = Curves.easeInOut.transform(phase);
         final scale = reducedMotion
             ? 0.9
-            : (inhale ? 0.72 + 0.28 * curved : 1.0 - 0.28 * curved);
+            : (inhale ? 0.52 + 0.53 * curved : 1.05 - 0.53 * curved);
 
         return Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             SizedBox(
-              width: 210,
-              height: 210,
+              width: 230,
+              height: 230,
               child: Center(
                 child: Container(
                   width: 210 * scale,
@@ -1966,19 +1695,6 @@ class _BreathingPulse extends StatelessWidget {
                     border: Border.all(
                       color: accent.withValues(alpha: 0.45),
                       width: 1.5,
-                    ),
-                  ),
-                  child: Center(
-                    child: Text(
-                      inhale ? 'In' : 'Out',
-                      style: Theme.of(context)
-                          .textTheme
-                          .headlineSmall
-                          ?.copyWith(
-                            fontWeight: FontWeight.w600,
-                            color: const Color(0xFF00695C),
-                            letterSpacing: -0.3,
-                          ),
                     ),
                   ),
                 ),
@@ -2015,45 +1731,28 @@ class _RelaxationCircle extends StatelessWidget {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
-        final progress = controller.value;
-        // Gentle slow drift of the inner circle (one soft cycle ~6 s).
-        final drift = reducedMotion
-            ? 0.0
-            : 0.04 * sin(progress * 2 * pi * 4);
+        // Gentle slow drift of the circle (one soft cycle per controller
+        // repeat, ~6 s). Relaxation is open-ended, so there is no progress
+        // indication.
+        final drift =
+            reducedMotion ? 0.0 : 0.05 * sin(controller.value * 2 * pi);
         return SizedBox(
           width: 240,
           height: 240,
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              // Subtle progress ring instead of a countdown.
-              SizedBox(
-                width: 240,
-                height: 240,
-                child: CircularProgressIndicator(
-                  value: progress,
-                  strokeWidth: 2.5,
-                  strokeCap: StrokeCap.round,
-                  backgroundColor: accent.withValues(alpha: 0.10),
-                  valueColor: AlwaysStoppedAnimation<Color>(
-                    accent.withValues(alpha: 0.35),
-                  ),
+          child: Center(
+            child: Container(
+              width: 190 * (1 + drift),
+              height: 190 * (1 + drift),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: RadialGradient(
+                  colors: [
+                    accent.withValues(alpha: 0.22),
+                    accent.withValues(alpha: 0.05),
+                  ],
                 ),
               ),
-              Container(
-                width: 190 * (1 + drift),
-                height: 190 * (1 + drift),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: RadialGradient(
-                    colors: [
-                      accent.withValues(alpha: 0.22),
-                      accent.withValues(alpha: 0.05),
-                    ],
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
         );
       },
