@@ -113,6 +113,15 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   // Live signal state
   StreamSubscription<double?>? _hrSub;
   StreamSubscription<PpgSignalQuality>? _qualitySub;
+  StreamSubscription<(int, double)>? _rawChartSub;
+  StreamSubscription<(int, double)>? _smoothedChartSub;
+
+  // Rolling HR history kept across all demo phases so charts never start
+  // empty when a new screen appears.
+  static const int _chartHistorySeconds = 60;
+  final List<(int, double)> _rawHrHistory = [];
+  final List<(int, double)> _smoothedHrHistory = [];
+
   double? _currentHr;
   DateTime? _lastHrSampleAt;
   DateTime _lastHrUiUpdate = DateTime.fromMillisecondsSinceEpoch(0);
@@ -127,7 +136,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   String? _warmthRating;
   String? _relaxationRating;
   bool _demoTriggerAvailable = false;
-  bool _recalibrateOnBaselineEntry = false;
+  bool _recalibrateOnNextRun = false;
   int _selectedIntensityIndex = 1;
   bool _resultSaved = false;
   int _aboveThresholdCount = 0;
@@ -163,12 +172,29 @@ class _LiveDemoPageState extends State<LiveDemoPage>
       if (!mounted || q == _quality) return;
       setState(() => _quality = q);
     });
+    final ticksPerSecond = pow(10, -widget.timestampExponent).toDouble();
+    void addPoint(List<(int, double)> history, (int, double) point) {
+      if (!point.$2.isFinite) return;
+      history.add(point);
+      final cutoff =
+          point.$1 - (_chartHistorySeconds * ticksPerSecond).round();
+      while (history.isNotEmpty && history.first.$1 < cutoff) {
+        history.removeAt(0);
+      }
+    }
+
+    _rawChartSub =
+        widget.rawHrStream.listen((p) => addPoint(_rawHrHistory, p));
+    _smoothedChartSub =
+        widget.smoothedHrStream.listen((p) => addPoint(_smoothedHrHistory, p));
   }
 
   @override
   void dispose() {
     _hrSub?.cancel();
     _qualitySub?.cancel();
+    _rawChartSub?.cancel();
+    _smoothedChartSub?.cancel();
     _cancelTimers();
     _breathingController?.dispose();
     _relaxationController?.dispose();
@@ -278,6 +304,9 @@ class _LiveDemoPageState extends State<LiveDemoPage>
         // Preview the pre-selected level right away so tapping is only
         // needed to switch levels.
         unawaited(_setPwm(_intensityPwm[_selectedIntensityIndex]));
+        // Start measuring the resting baseline in the background already,
+        // so the next step has valid heart rates from the start.
+        _startBackgroundCalibration();
       case _DemoStep.baseline:
         _enterBaseline();
       case _DemoStep.breathing:
@@ -330,10 +359,13 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     );
   }
 
-  void _enterBaseline() {
+  /// Starts (or restarts) the baseline calibration if needed. Runs silently
+  /// in the background; the baseline screen only visualizes its state.
+  void _startBackgroundCalibration() {
     final calibration = widget.calibration;
-    if (_recalibrateOnBaselineEntry || calibration.latestResult == null) {
-      _recalibrateOnBaselineEntry = false;
+    if (calibration.isCalibrating) return;
+    if (_recalibrateOnNextRun || calibration.latestResult == null) {
+      _recalibrateOnNextRun = false;
       // stop() before start() so the existing subscriptions are re-created
       // cleanly for the next participant.
       calibration.stop();
@@ -342,6 +374,11 @@ class _LiveDemoPageState extends State<LiveDemoPage>
         signalQualityStream: widget.signalQualityStream,
       );
     }
+  }
+
+  void _enterBaseline() {
+    // Fallback in case the background calibration was not started yet.
+    _startBackgroundCalibration();
     _uiTick = Timer.periodic(const Duration(milliseconds: 500), (_) {
       if (mounted) setState(() {});
     });
@@ -456,7 +493,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
       _relaxEndAvailable = false;
       // Next participant gets a fresh personal baseline; BLE connections
       // are intentionally preserved.
-      _recalibrateOnBaselineEntry = true;
+      _recalibrateOnNextRun = true;
     });
   }
 
@@ -712,7 +749,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
             onPressed: isCalibrating
                 ? null
                 : () {
-                    _recalibrateOnBaselineEntry = true;
+                    _recalibrateOnNextRun = true;
                     _goTo(_DemoStep.baseline);
                   },
             child: const Text('Restart measurement'),
@@ -809,6 +846,8 @@ class _LiveDemoPageState extends State<LiveDemoPage>
               child: RollingHrChart(
                 rawHrStream: widget.rawHrStream,
                 smoothedHrStream: widget.smoothedHrStream,
+                initialRawData: _rawHrHistory,
+                initialSmoothedData: _smoothedHrHistory,
                 timestampExponent: widget.timestampExponent,
                 timeWindow: 60,
                 baseline: result?.baselineHeartRate,
@@ -910,6 +949,8 @@ class _LiveDemoPageState extends State<LiveDemoPage>
               child: RollingHrChart(
                 rawHrStream: widget.rawHrStream,
                 smoothedHrStream: widget.smoothedHrStream,
+                initialRawData: _rawHrHistory,
+                initialSmoothedData: _smoothedHrHistory,
                 timestampExponent: widget.timestampExponent,
                 timeWindow: 60,
                 baseline: widget.calibration.latestResult?.baselineHeartRate,
@@ -1022,6 +1063,8 @@ class _LiveDemoPageState extends State<LiveDemoPage>
               child: RollingHrChart(
                 rawHrStream: widget.rawHrStream,
                 smoothedHrStream: widget.smoothedHrStream,
+                initialRawData: _rawHrHistory,
+                initialSmoothedData: _smoothedHrHistory,
                 timestampExponent: widget.timestampExponent,
                 timeWindow: 60,
                 baseline: widget.calibration.latestResult?.baselineHeartRate,

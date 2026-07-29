@@ -20,6 +20,11 @@ class RollingHrChart extends StatefulWidget {
   final double? baseline;
   final double? threshold;
 
+  /// Optional history to seed the chart with, so it does not start empty
+  /// when the surrounding screen is rebuilt.
+  final List<(int, double)>? initialRawData;
+  final List<(int, double)>? initialSmoothedData;
+
   const RollingHrChart({
     super.key,
     required this.rawHrStream,
@@ -29,6 +34,8 @@ class RollingHrChart extends StatefulWidget {
     this.timeWindow = 60,
     this.baseline,
     this.threshold,
+    this.initialRawData,
+    this.initialSmoothedData,
   });
 
   @override
@@ -121,6 +128,8 @@ class _RollingHrChartState extends State<RollingHrChart> {
   @override
   void initState() {
     super.initState();
+    _seed(widget.initialRawData, _rawData);
+    _seed(widget.initialSmoothedData, _smoothedData);
     _subscribe();
     _refreshTimer = Timer.periodic(_refreshInterval, (_) {
       if (_dirty && mounted) {
@@ -144,6 +153,22 @@ class _RollingHrChartState extends State<RollingHrChart> {
       _smoothedData.clear();
       _gapTimestamps.clear();
       _subscribe();
+    }
+  }
+
+  void _seed(List<(int, double)>? initial, Queue<_Pt> target) {
+    if (initial == null || initial.isEmpty) {
+      return;
+    }
+    final ticksPerSecond = pow(10, -widget.timestampExponent).toDouble();
+    for (final (ts, value) in initial) {
+      if (value.isFinite) {
+        target.addLast(_Pt(ts, value));
+      }
+    }
+    if (target.isNotEmpty) {
+      _trim(target, target.last.ts, ticksPerSecond);
+      _dirty = true;
     }
   }
 
