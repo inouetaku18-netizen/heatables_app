@@ -16,6 +16,10 @@ class RollingHrChart extends StatefulWidget {
   final int timestampExponent;
   final int timeWindow;
 
+  /// Optional horizontal reference lines (BPM values).
+  final double? baseline;
+  final double? threshold;
+
   const RollingHrChart({
     super.key,
     required this.rawHrStream,
@@ -23,6 +27,8 @@ class RollingHrChart extends StatefulWidget {
     this.bleGapStream,
     required this.timestampExponent,
     this.timeWindow = 60,
+    this.baseline,
+    this.threshold,
   });
 
   @override
@@ -213,6 +219,12 @@ class _RollingHrChartState extends State<RollingHrChart> {
         }
       }
     }
+    for (final ref in [widget.baseline, widget.threshold]) {
+      if (ref != null && ref.isFinite) {
+        yMinD = min(yMinD, ref);
+        yMaxD = max(yMaxD, ref);
+      }
+    }
     if (!yMinD.isFinite) {
       yMinD = 50;
     }
@@ -271,6 +283,8 @@ class _RollingHrChartState extends State<RollingHrChart> {
           xMax: _xMax,
           yMin: _yMin,
           yMax: _yMax,
+          baseline: widget.baseline,
+          threshold: widget.threshold,
         ),
         size: Size.infinite,
       ),
@@ -295,6 +309,8 @@ class _DualLinePainter extends CustomPainter {
   final double xMax;
   final double yMin;
   final double yMax;
+  final double? baseline;
+  final double? threshold;
 
   _DualLinePainter({
     required this.rawPoints,
@@ -304,6 +320,8 @@ class _DualLinePainter extends CustomPainter {
     required this.xMax,
     required this.yMin,
     required this.yMax,
+    this.baseline,
+    this.threshold,
   });
 
   @override
@@ -379,6 +397,29 @@ class _DualLinePainter extends CustomPainter {
       ty += yStep;
     }
 
+    if (baseline != null && baseline!.isFinite) {
+      _drawReferenceLine(
+        canvas,
+        toY(baseline!).clamp(0.0, chartHeight),
+        leftMargin,
+        size.width,
+        const Color(0xFF009682),
+        'Baseline',
+        dashed: false,
+      );
+    }
+    if (threshold != null && threshold!.isFinite) {
+      _drawReferenceLine(
+        canvas,
+        toY(threshold!).clamp(0.0, chartHeight),
+        leftMargin,
+        size.width,
+        const Color(0xFFFF8F00),
+        'Trigger',
+        dashed: true,
+      );
+    }
+
     if (rawPoints != null && rawPoints!.length >= 2) {
       final rawPaint = Paint()
         ..color = Colors.grey.shade400
@@ -406,6 +447,51 @@ class _DualLinePainter extends CustomPainter {
         ..isAntiAlias = true;
       _drawLine(canvas, smoothedPoints!, toX, toY, chartHeight, smoothPaint);
     }
+  }
+
+  void _drawReferenceLine(
+    Canvas canvas,
+    double py,
+    double left,
+    double right,
+    Color color,
+    String label, {
+    required bool dashed,
+  }) {
+    final paint = Paint()
+      ..color = color.withValues(alpha: 0.75)
+      ..strokeWidth = 1.4;
+    if (dashed) {
+      const dashWidth = 5.0;
+      const dashGap = 4.0;
+      var x = left;
+      while (x < right) {
+        canvas.drawLine(
+          Offset(x, py),
+          Offset(min(x + dashWidth, right), py),
+          paint,
+        );
+        x += dashWidth + dashGap;
+      }
+    } else {
+      canvas.drawLine(Offset(left, py), Offset(right, py), paint);
+    }
+
+    final painter = TextPainter(
+      text: TextSpan(
+        text: label,
+        style: TextStyle(
+          color: color,
+          fontSize: 9,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    painter.paint(
+      canvas,
+      Offset(right - painter.width - 2, py - painter.height - 2),
+    );
   }
 
   void _drawLine(

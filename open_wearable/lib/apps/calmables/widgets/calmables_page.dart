@@ -11,6 +11,7 @@ import 'package:open_wearable/apps/calmables/model/ppg_filter.dart';
 import 'package:open_wearable/apps/calmables/model/sensor_data_logger.dart';
 import 'package:open_wearable/apps/calmables/model/hr_calibration.dart';
 import 'package:open_wearable/apps/calmables/widgets/calmables_card_styles.dart';
+import 'package:open_wearable/apps/calmables/widgets/live_demo_page.dart';
 import 'package:open_wearable/apps/calmables/widgets/rowling_chart.dart';
 import 'package:open_wearable/apps/calmables/widgets/rolling_hr_chart.dart';
 import 'package:open_wearable/apps/calmables/widgets/study_protocol_page.dart';
@@ -617,6 +618,46 @@ class _CalmablesPageState extends State<CalmablesPage> {
     );
   }
 
+  void _openLiveDemo() {
+    final heartRateStream = _heartRateStream;
+    final signalQualityStream = _signalQualityStream;
+    final rawHrStream = _rawHrChartStream;
+    final smoothedHrStream = _smoothedHrChartStream;
+    if (heartRateStream == null ||
+        signalQualityStream == null ||
+        rawHrStream == null ||
+        smoothedHrStream == null) {
+      return;
+    }
+    // Hand exclusive thermal control to the demo: leave autopilot, switch off
+    // any manual heating so no second controller keeps writing PWM values.
+    _heartRateSubscription?.cancel();
+    _heartRateSubscription = null;
+    setState(() {
+      _controlMode = ControlMode.manual;
+      _manualPwmOn = false;
+      _autopilotActive = false;
+    });
+    sendDataToCalmables([0]);
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => LiveDemoPage(
+          heartRateStream: heartRateStream,
+          signalQualityStream: signalQualityStream,
+          rawHrStream: rawHrStream,
+          smoothedHrStream: smoothedHrStream,
+          timestampExponent: widget.ppgSensor.timestampExponent,
+          calibration: _calibration,
+          hrSourceName: widget.wearable.name,
+          isCalmablesConnected: () => calmablesDevice != null,
+          onConnectCalmables: _ensureCalmablesConnected,
+          onSendToCalmables: sendDataToCalmables,
+        ),
+      ),
+    );
+  }
+
   Future<void> _onStartRecordingPressed() async {
     final ppgStream = _rawPpgStream;
     if (ppgStream == null) return;
@@ -935,9 +976,37 @@ class _CalmablesPageState extends State<CalmablesPage> {
     final temperatureStream = _temperatureStream;
     final signalQualityStream = _signalQualityStream;
 
+    final pipelineReady = displayPpgSignalStream != null &&
+        heartRateStream != null &&
+        _rawHrChartStream != null &&
+        _smoothedHrChartStream != null;
+
     return PlatformScaffold(
       appBar: PlatformAppBar(
         title: PlatformText('Calmables Demo'),
+        trailingActions: [
+          PlatformTextButton(
+            onPressed: pipelineReady ? _openLiveDemo : null,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.play_circle_outline_rounded,
+                  size: 20,
+                  color: pipelineReady ? calmablesAccentColor : Colors.grey,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  'Live Demo',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: pipelineReady ? calmablesAccentColor : Colors.grey,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
       body: displayPpgSignalStream == null ||
               heartRateStream == null ||
