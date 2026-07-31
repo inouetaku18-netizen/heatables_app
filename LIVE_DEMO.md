@@ -25,18 +25,21 @@ instance, and the BLE send callback into the demo page.
 ## The flow
 
 ```
-Ready → Warmth intensity → Baseline → Brief activation → Breathing
-      → Relaxation intro → Relaxation → Welcome back
+Ready → Stimulation intensity → Baseline measurement → Brief activation
+      → Relaxation → Welcome back
       → Survey statement 1 → Survey statement 2 → Summary  (→ Start Again)
 Exit (X / back) at any point → Survey results list
 ```
+
+Every screen uses the same header format: an accent icon, a bold title, and
+one line of supporting text below it.
 
 ### 1. Ready
 Logo, tagline, and compact connection status for the HR source (earable) and the
 Calmables device (with a *Connect* action if disconnected). **Start Demo** is
 enabled once a live HR signal is present.
 
-### 2. Warmth intensity
+### 2. Stimulation intensity
 One panel like the main Calmables page: **ON/OFF switch** plus the **gradient
 slider (0–255)** with a color-coded Off/Low/Medium/High label.
 
@@ -49,19 +52,21 @@ slider (0–255)** with a color-coded Off/Low/Medium/High label.
 HR is measured in the background the entire time (signal, current BPM, and a
 rolling 60 s chart history), but the baseline **aggregation does not start here**.
 
-### 3. Baseline
+### 3. Baseline measurement
 The 30-second baseline aggregation starts **only when this step is entered**
-(via the Continue button). Shows the live heart rate, baseline and trigger
-threshold tiles, and a live HR chart with baseline/trigger reference lines —
-pre-seeded with the last 60 s of history, so there is no "waiting for signal".
+(via the Continue button). A heart icon heads the screen, followed by the live
+heart rate, baseline and trigger threshold tiles, and a live HR chart with
+baseline/trigger reference lines — pre-seeded with the last 60 s of history,
+so there is no "waiting for signal".
 **Continue** unlocks when the measurement is done; *Restart measurement* is
 available.
 
 - Baseline = mean HR of the window; trigger = `max(baseline + 15, mean + 3σ)`
   (rolling updates continue afterwards; manual overrides stay untouched).
 
-### 4. Brief activation → Breathing
-After an intro screen, a pulsing circle guides fast breathing:
+### 4. Brief activation
+Continuing from the baseline goes **straight** into the guided breathing — no
+separate intro screen. The instruction sits above a pulsing circle:
 
 - Breath rate ramps from **30 to 50 breaths/min over 10 s**, then holds.
 - No "In/Out" labels; strong expand/contract animation (reduced-motion aware).
@@ -81,9 +86,10 @@ not touch any HR value — it starts the same safe thermal pathway and records
 `triggerSource = demo`.
 
 ### 5. Relaxation
-Intro screen ("Take a moment to notice the warmth" / "You can breathe normally
-again.") → **I'm ready** → a calm, minimal screen with a slowly drifting circle,
-a small live BPM readout, and the HR chart.
+The trigger leads **directly** into the relaxation screen — no confirmation and
+no "I'm ready" step. It shows the instruction ("Take a moment to notice the
+stimulation. Feel free to close your eyes …") above a slowly drifting circle,
+with a small live BPM readout and the HR chart below.
 
 There is **no countdown timer**. Rules:
 

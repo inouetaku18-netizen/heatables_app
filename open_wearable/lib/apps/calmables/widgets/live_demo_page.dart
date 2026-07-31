@@ -37,9 +37,7 @@ enum _DemoStep {
   ready,
   intensitySelect,
   baseline,
-  activationIntro,
   breathing,
-  relaxationIntro,
   relaxationRunning,
   welcomeBack,
   relaxationStatement,
@@ -431,7 +429,8 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     _cancelTimers();
     _breathingController?.stop();
     _startThermalFeedback(DemoTriggerSource.automatic);
-    if (mounted) setState(() => _step = _DemoStep.relaxationIntro);
+    if (!mounted) return;
+    _goTo(_DemoStep.relaxationRunning);
   }
 
   void _onDemoTrigger() {
@@ -439,7 +438,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     // thermal pathway and records the source as "demo".
     _cancelTimers();
     _startThermalFeedback(DemoTriggerSource.demo);
-    _goTo(_DemoStep.relaxationIntro);
+    _goTo(_DemoStep.relaxationRunning);
   }
 
   void _enterRelaxation() {
@@ -516,9 +515,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
       _DemoStep.ready => _buildReady(),
       _DemoStep.intensitySelect => _buildIntensitySelect(),
       _DemoStep.baseline => _buildBaseline(),
-      _DemoStep.activationIntro => _buildActivationIntro(),
       _DemoStep.breathing => _buildBreathing(),
-      _DemoStep.relaxationIntro => _buildRelaxationIntro(),
       _DemoStep.relaxationRunning => _buildRelaxationRunning(),
       _DemoStep.welcomeBack => _buildWelcomeBack(),
       _DemoStep.relaxationStatement => _buildLikertScreen(
@@ -581,7 +578,6 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   // ── Screens ────────────────────────────────────────────────────────────────
 
   Widget _buildReady() {
-    final theme = Theme.of(context);
     final calmablesConnected = widget.isCalmablesConnected();
 
     return _ScreenFrame(
@@ -595,33 +591,10 @@ class _LiveDemoPageState extends State<LiveDemoPage>
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const SizedBox(height: 12),
-          Center(
-            child: Container(
-              width: 84,
-              height: 84,
-              decoration: BoxDecoration(
-                color: _accent.withValues(alpha: 0.10),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.spa_rounded, size: 42, color: _accent),
-            ),
-          ),
-          const SizedBox(height: 24),
-          Text(
-            'Calmables',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.headlineMedium?.copyWith(
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.5,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Thermal biofeedback for short moments of recovery',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.bodyLarge?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
+          const _ScreenHeader(
+            icon: Icons.spa_rounded,
+            title: 'Calmables',
+            subtitle: 'Thermal biofeedback for short moments of recovery',
           ),
           const SizedBox(height: 32),
           _StatusRow(
@@ -668,39 +641,11 @@ class _LiveDemoPageState extends State<LiveDemoPage>
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const SizedBox(height: 12),
-          Center(
-            child: Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                color: _accent.withValues(alpha: 0.10),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.thermostat_rounded,
-                size: 36,
-                color: _accent,
-              ),
-            ),
-          ),
-          const SizedBox(height: 24),
-          Text(
-            'Warmth intensity',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.3,
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'Adjust the warmth used for the thermal feedback. '
-            'You can feel it while adjusting.',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-              height: 1.4,
-            ),
+          const _ScreenHeader(
+            icon: Icons.thermostat_rounded,
+            title: 'Stimulation intensity',
+            subtitle: 'Adjust the intensity used for the thermal feedback. '
+                'You can feel it while adjusting.',
           ),
           const SizedBox(height: 28),
           Container(
@@ -834,7 +779,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
           ],
           _PrimaryButton(
             label: 'Continue',
-            onPressed: ready ? () => _goTo(_DemoStep.activationIntro) : null,
+            onPressed: ready ? () => _goTo(_DemoStep.breathing) : null,
           ),
           TextButton(
             onPressed: isCalibrating
@@ -850,21 +795,13 @@ class _LiveDemoPageState extends State<LiveDemoPage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(
-            'Your resting heart rate',
-            style: theme.textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.3,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Calmables uses your personal resting baseline to recognize '
-            'temporary heart-rate elevation.',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-              height: 1.4,
-            ),
+          const SizedBox(height: 4),
+          const _ScreenHeader(
+            icon: Icons.favorite_rounded,
+            title: 'Baseline measurement',
+            subtitle: 'Calmables uses your personal resting heart rate as a '
+                'baseline and derives the activation threshold that starts '
+                'the thermal feedback.',
           ),
           const SizedBox(height: 28),
           Center(
@@ -951,58 +888,6 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     );
   }
 
-  Widget _buildActivationIntro() {
-    final theme = Theme.of(context);
-    return _ScreenFrame(
-      footer: _PrimaryButton(
-        label: 'Start',
-        onPressed: () => _goTo(_DemoStep.breathing),
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Center(
-            child: Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                color: _accent.withValues(alpha: 0.10),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.air_rounded, size: 36, color: _accent),
-            ),
-          ),
-          const SizedBox(height: 28),
-          Text(
-            'Brief activation',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.3,
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'Follow the pulse and match your breathing to its rhythm.',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.bodyLarge?.copyWith(height: 1.4),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'Keep your breathing light and comfortable. '
-            'You can stop at any time.',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-              height: 1.4,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildBreathing() {
     return _ScreenFrame(
       footer: AnimatedOpacity(
@@ -1021,22 +906,33 @@ class _LiveDemoPageState extends State<LiveDemoPage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          const _ScreenHeader(
+            icon: Icons.air_rounded,
+            title: 'Brief activation',
+            subtitle: 'Follow the pulse and match your breathing to its '
+                'rhythm. Keep your breathing light and comfortable.',
+            compact: true,
+          ),
+          const SizedBox(height: 16),
           _hrAndThresholdRow(),
           Expanded(
             child: Center(
-              child: _BreathingPulse(
-                controller: _breathingController!,
-                reducedMotion: _reducedMotion,
-                startTime: _breathingStartedAt ?? DateTime.now(),
-                rampSeconds: _breathRampDuration.inSeconds.toDouble(),
-                startHz: _breathStartHz,
-                endHz: _breathEndHz,
+              child: LayoutBuilder(
+                builder: (context, constraints) => _BreathingPulse(
+                  controller: _breathingController!,
+                  reducedMotion: _reducedMotion,
+                  startTime: _breathingStartedAt ?? DateTime.now(),
+                  rampSeconds: _breathRampDuration.inSeconds.toDouble(),
+                  startHz: _breathStartHz,
+                  endHz: _breathEndHz,
+                  diameter: _circleDiameter(constraints),
+                ),
               ),
             ),
           ),
           _ChartCard(
             child: SizedBox(
-              height: 120,
+              height: 110,
               child: RollingHrChart(
                 rawHrStream: widget.rawHrStream,
                 smoothedHrStream: widget.smoothedHrStream,
@@ -1054,63 +950,11 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     );
   }
 
-  Widget _buildRelaxationIntro() {
-    final theme = Theme.of(context);
-    return _ScreenFrame(
-      footer: _PrimaryButton(
-        label: "I'm ready",
-        onPressed: () => _goTo(_DemoStep.relaxationRunning),
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Center(
-            child: Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                color: _accent.withValues(alpha: 0.10),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.self_improvement_rounded,
-                size: 36,
-                color: _accent,
-              ),
-            ),
-          ),
-          const SizedBox(height: 28),
-          Text(
-            'Take a moment to notice the warmth',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.3,
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'You can breathe normally again.',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.bodyLarge?.copyWith(
-              fontWeight: FontWeight.w600,
-              height: 1.4,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Feel free to close your eyes and focus on the sensation. '
-            "We'll gently bring you back in a few moments.",
-            textAlign: TextAlign.center,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-              height: 1.4,
-            ),
-          ),
-        ],
-      ),
-    );
+  /// Largest circle that still fits the space left over for the visual, so
+  /// the screens stay overflow-free on small phones.
+  double _circleDiameter(BoxConstraints constraints) {
+    final available = min(constraints.maxHeight, constraints.maxWidth);
+    return available.isFinite ? available.clamp(0.0, 230.0) : 230.0;
   }
 
   Widget _buildRelaxationRunning() {
@@ -1119,13 +963,27 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     final hr = _currentHr;
     return Column(
       children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(24, 20, 24, 0),
+          child: _ScreenHeader(
+            icon: Icons.self_improvement_rounded,
+            title: 'Relaxation',
+            subtitle: 'Take a moment to notice the stimulation. Feel free to '
+                "close your eyes and focus on the sensation. We'll gently "
+                'bring you back in a few moments.',
+            compact: true,
+          ),
+        ),
         Expanded(
           child: Center(
             child: controller == null
                 ? const SizedBox.shrink()
-                : _RelaxationCircle(
-                    controller: controller,
-                    reducedMotion: _reducedMotion,
+                : LayoutBuilder(
+                    builder: (context, constraints) => _RelaxationCircle(
+                      controller: controller,
+                      reducedMotion: _reducedMotion,
+                      diameter: _circleDiameter(constraints),
+                    ),
                   ),
           ),
         ),
@@ -1191,20 +1049,15 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   }
 
   Widget _buildWelcomeBack() {
-    final theme = Theme.of(context);
     return _ScreenFrame(
       footer: _PrimaryButton(
         label: "I'm back",
         onPressed: () => _goTo(_DemoStep.relaxationStatement),
       ),
-      child: Center(
-        child: Text(
-          'Welcome back',
-          style: theme.textTheme.headlineMedium?.copyWith(
-            fontWeight: FontWeight.w600,
-            letterSpacing: -0.4,
-            color: theme.colorScheme.onSurface,
-          ),
+      child: const Center(
+        child: _ScreenHeader(
+          icon: Icons.waving_hand_rounded,
+          title: 'Welcome back.',
         ),
       ),
     );
@@ -1246,7 +1099,6 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   }
 
   Widget _buildSummary() {
-    final theme = Theme.of(context);
     final result = widget.calibration.latestResult;
 
     return _ScreenFrame(
@@ -1259,29 +1111,9 @@ class _LiveDemoPageState extends State<LiveDemoPage>
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const SizedBox(height: 8),
-          Center(
-            child: Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                color: _accent.withValues(alpha: 0.10),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.check_rounded,
-                size: 38,
-                color: _accent,
-              ),
-            ),
-          ),
-          const SizedBox(height: 24),
-          Text(
-            'Demo complete',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.3,
-            ),
+          const _ScreenHeader(
+            icon: Icons.check_rounded,
+            title: 'Demo complete',
           ),
           const SizedBox(height: 28),
           _SummaryCard(
@@ -1375,6 +1207,70 @@ class _ScreenFrame extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(24, 12, 24, 16),
             child: footer,
           ),
+      ],
+    );
+  }
+}
+
+/// Shared page header: accent icon, bold title, optional supporting text.
+class _ScreenHeader extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String? subtitle;
+
+  /// Tighter spacing for screens that also host a live visual.
+  final bool compact;
+
+  const _ScreenHeader({
+    required this.icon,
+    required this.title,
+    this.subtitle,
+    this.compact = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const accent = Color(0xFF009682);
+    final theme = Theme.of(context);
+    final circleSize = compact ? 58.0 : 78.0;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Center(
+          child: Container(
+            width: circleSize,
+            height: circleSize,
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: 0.10),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, size: circleSize * 0.48, color: accent),
+          ),
+        ),
+        SizedBox(height: compact ? 14 : 22),
+        Text(
+          title,
+          textAlign: TextAlign.center,
+          style: (compact
+                  ? theme.textTheme.titleLarge
+                  : theme.textTheme.headlineSmall)
+              ?.copyWith(
+            fontWeight: FontWeight.w700,
+            letterSpacing: -0.3,
+          ),
+        ),
+        if (subtitle != null) ...[
+          SizedBox(height: compact ? 6 : 10),
+          Text(
+            subtitle!,
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              height: 1.4,
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -1761,6 +1657,7 @@ class _BreathingPulse extends StatelessWidget {
   final double rampSeconds;
   final double startHz;
   final double endHz;
+  final double diameter;
 
   const _BreathingPulse({
     required this.controller,
@@ -1769,6 +1666,7 @@ class _BreathingPulse extends StatelessWidget {
     required this.rampSeconds,
     required this.startHz,
     required this.endHz,
+    this.diameter = 230,
   });
 
   @override
@@ -1797,40 +1695,28 @@ class _BreathingPulse extends StatelessWidget {
             ? 0.9
             : (inhale ? 0.52 + 0.53 * curved : 1.05 - 0.53 * curved);
 
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              width: 230,
-              height: 230,
-              child: Center(
-                child: Container(
-                  width: 210 * scale,
-                  height: 210 * scale,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: RadialGradient(
-                      colors: [
-                        accent.withValues(alpha: 0.35),
-                        accent.withValues(alpha: 0.10),
-                      ],
-                    ),
-                    border: Border.all(
-                      color: accent.withValues(alpha: 0.45),
-                      width: 1.5,
-                    ),
-                  ),
+        return SizedBox(
+          width: diameter,
+          height: diameter,
+          child: Center(
+            child: Container(
+              width: diameter * 0.91 * scale,
+              height: diameter * 0.91 * scale,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: RadialGradient(
+                  colors: [
+                    accent.withValues(alpha: 0.35),
+                    accent.withValues(alpha: 0.10),
+                  ],
+                ),
+                border: Border.all(
+                  color: accent.withValues(alpha: 0.45),
+                  width: 1.5,
                 ),
               ),
             ),
-            const SizedBox(height: 20),
-            Text(
-              'Match your breathing to the pulse',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-            ),
-          ],
+          ),
         );
       },
     );
@@ -1842,10 +1728,12 @@ class _BreathingPulse extends StatelessWidget {
 class _RelaxationCircle extends StatelessWidget {
   final AnimationController controller;
   final bool reducedMotion;
+  final double diameter;
 
   const _RelaxationCircle({
     required this.controller,
     required this.reducedMotion,
+    this.diameter = 240,
   });
 
   @override
@@ -1860,12 +1748,12 @@ class _RelaxationCircle extends StatelessWidget {
         final drift =
             reducedMotion ? 0.0 : 0.05 * sin(controller.value * 2 * pi);
         return SizedBox(
-          width: 240,
-          height: 240,
+          width: diameter,
+          height: diameter,
           child: Center(
             child: Container(
-              width: 190 * (1 + drift),
-              height: 190 * (1 + drift),
+              width: diameter * 0.79 * (1 + drift),
+              height: diameter * 0.79 * (1 + drift),
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 gradient: RadialGradient(
