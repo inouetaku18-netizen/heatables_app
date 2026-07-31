@@ -17,8 +17,10 @@ class DemoSurveyResult {
   final double? baseline;
   final double? peakHr;
   final DemoTriggerSource? triggerSource;
-  final String? warmthRating;
-  final String? relaxationRating;
+
+  /// Agreement on a 1–7 scale (1 = Strongly Disagree, 7 = Strongly Agree).
+  final int? relaxationAgreement;
+  final int? usageAgreement;
 
   const DemoSurveyResult({
     required this.timestamp,
@@ -26,8 +28,8 @@ class DemoSurveyResult {
     this.baseline,
     this.peakHr,
     this.triggerSource,
-    this.warmthRating,
-    this.relaxationRating,
+    this.relaxationAgreement,
+    this.usageAgreement,
   });
 }
 
@@ -40,9 +42,25 @@ enum _DemoStep {
   relaxationIntro,
   relaxationRunning,
   welcomeBack,
-  warmthRating,
-  relaxationRating,
+  relaxationStatement,
+  usageStatement,
   summary,
+}
+
+/// Number of points on the agreement scale (1 = Strongly Disagree).
+const int _likertPoints = 7;
+
+String _likertLabel(int value) => switch (value) {
+      1 => 'Strongly Disagree',
+      7 => 'Strongly Agree',
+      _ => '',
+    };
+
+/// Compact "5 / 7" rendering for summaries, with the anchor label if any.
+String _agreementText(int? value) {
+  if (value == null) return '--';
+  final label = _likertLabel(value);
+  return label.isEmpty ? '$value / 7' : '$value / 7 · $label';
 }
 
 /// Guided conference demo flow.
@@ -128,8 +146,8 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   int _currentPwm = 0;
   double? _peakHr;
   bool _trackPeak = false;
-  String? _warmthRating;
-  String? _relaxationRating;
+  int? _relaxationAgreement;
+  int? _usageAgreement;
   bool _demoTriggerAvailable = false;
   bool _recalibrateOnNextRun = false;
   int _demoPwm = 130;
@@ -327,7 +345,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
 
   void _saveSurveyResult() {
     if (_resultSaved) return;
-    if (_warmthRating == null && _relaxationRating == null) return;
+    if (_relaxationAgreement == null && _usageAgreement == null) return;
     _resultSaved = true;
     LiveDemoPage.sessionResults.add(
       DemoSurveyResult(
@@ -336,8 +354,8 @@ class _LiveDemoPageState extends State<LiveDemoPage>
         baseline: widget.calibration.latestResult?.baselineHeartRate,
         peakHr: _peakHr,
         triggerSource: _triggerSource,
-        warmthRating: _warmthRating,
-        relaxationRating: _relaxationRating,
+        relaxationAgreement: _relaxationAgreement,
+        usageAgreement: _usageAgreement,
       ),
     );
   }
@@ -449,15 +467,15 @@ class _LiveDemoPageState extends State<LiveDemoPage>
 
   // ── Ratings ────────────────────────────────────────────────────────────────
 
-  void _selectWarmthRating(String value) {
+  void _selectRelaxationStatement(int value) {
     unawaited(HapticFeedback.selectionClick());
-    _warmthRating = value;
-    _goTo(_DemoStep.relaxationRating);
+    _relaxationAgreement = value;
+    _goTo(_DemoStep.usageStatement);
   }
 
-  void _selectRelaxationRating(String value) {
+  void _selectUsageStatement(int value) {
     unawaited(HapticFeedback.selectionClick());
-    _relaxationRating = value;
+    _usageAgreement = value;
     _goTo(_DemoStep.summary);
   }
 
@@ -472,8 +490,8 @@ class _LiveDemoPageState extends State<LiveDemoPage>
       _step = _DemoStep.ready;
       _triggerSource = null;
       _thermalStarted = false;
-      _warmthRating = null;
-      _relaxationRating = null;
+      _relaxationAgreement = null;
+      _usageAgreement = null;
       _peakHr = null;
       _trackPeak = false;
       _demoTriggerAvailable = false;
@@ -503,15 +521,16 @@ class _LiveDemoPageState extends State<LiveDemoPage>
       _DemoStep.relaxationIntro => _buildRelaxationIntro(),
       _DemoStep.relaxationRunning => _buildRelaxationRunning(),
       _DemoStep.welcomeBack => _buildWelcomeBack(),
-      _DemoStep.warmthRating => _buildRatingScreen(
-          question: 'How did the warmth feel?',
-          options: const ['Barely noticeable', 'Comfortable', 'Too warm'],
-          onSelected: _selectWarmthRating,
+      _DemoStep.relaxationStatement => _buildLikertScreen(
+          number: 1,
+          statement: 'The device helped me feel more relaxed.',
+          onSelected: _selectRelaxationStatement,
         ),
-      _DemoStep.relaxationRating => _buildRatingScreen(
-          question: 'Did the thermal feedback feel relaxing?',
-          options: const ['Not really', 'Somewhat', 'Yes'],
-          onSelected: _selectRelaxationRating,
+      _DemoStep.usageStatement => _buildLikertScreen(
+          number: 2,
+          statement: 'I would use this device during stressful days '
+              'in private.',
+          onSelected: _selectUsageStatement,
         ),
       _DemoStep.summary => _buildSummary(),
     };
@@ -1176,7 +1195,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     return _ScreenFrame(
       footer: _PrimaryButton(
         label: "I'm back",
-        onPressed: () => _goTo(_DemoStep.warmthRating),
+        onPressed: () => _goTo(_DemoStep.relaxationStatement),
       ),
       child: Center(
         child: Text(
@@ -1191,33 +1210,36 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     );
   }
 
-  Widget _buildRatingScreen({
-    required String question,
-    required List<String> options,
-    required ValueChanged<String> onSelected,
+  Widget _buildLikertScreen({
+    required int number,
+    required String statement,
+    required ValueChanged<int> onSelected,
   }) {
     final theme = Theme.of(context);
     return _ScreenFrame(
+      scrollable: true,
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          const SizedBox(height: 12),
           Text(
-            question,
-            textAlign: TextAlign.center,
-            style: theme.textTheme.headlineSmall?.copyWith(
+            '$number. $statement',
+            style: theme.textTheme.titleLarge?.copyWith(
               fontWeight: FontWeight.w700,
-              letterSpacing: -0.3,
+              letterSpacing: -0.2,
+              height: 1.3,
             ),
           ),
-          const SizedBox(height: 32),
-          for (final option in options) ...[
-            _OptionButton(
-              label: option,
-              onPressed: () => onSelected(option),
+          const SizedBox(height: 24),
+          for (var value = 1; value <= _likertPoints; value++) ...[
+            _LikertOption(
+              value: value,
+              label: _likertLabel(value),
+              onTap: () => onSelected(value),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
           ],
+          const SizedBox(height: 8),
         ],
       ),
     );
@@ -1285,8 +1307,8 @@ class _LiveDemoPageState extends State<LiveDemoPage>
                 }
               ),
               ('Intensity', _intensityDescription()),
-              ('Warmth rating', _warmthRating ?? '--'),
-              ('Relaxation rating', _relaxationRating ?? '--'),
+              ('Felt more relaxed', _agreementText(_relaxationAgreement)),
+              ('Would use in private', _agreementText(_usageAgreement)),
             ],
           ),
         ],
@@ -1388,32 +1410,60 @@ class _PrimaryButton extends StatelessWidget {
   }
 }
 
-class _OptionButton extends StatelessWidget {
+/// One row of the vertical 7-point Likert scale.
+class _LikertOption extends StatelessWidget {
+  final int value;
   final String label;
-  final VoidCallback onPressed;
+  final VoidCallback onTap;
 
-  const _OptionButton({required this.label, required this.onPressed});
+  const _LikertOption({
+    required this.value,
+    required this.label,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return SizedBox(
-      width: double.infinity,
-      height: 56,
-      child: OutlinedButton(
-        onPressed: onPressed,
-        style: OutlinedButton.styleFrom(
-          foregroundColor: theme.colorScheme.onSurface,
-          side: BorderSide(color: theme.colorScheme.outlineVariant),
-          textStyle: const TextStyle(
-            fontSize: 17,
-            fontWeight: FontWeight.w500,
-          ),
-          shape: RoundedRectangleBorder(
+    return Semantics(
+      button: true,
+      label: label,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          height: 54,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(
+            color: _panelColor(theme),
             borderRadius: BorderRadius.circular(14),
           ),
+          child: Row(
+            children: [
+              Icon(
+                Icons.circle_outlined,
+                size: 22,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 14),
+              Text(
+                '$value',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  label,
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
-        child: Text(label),
       ),
     );
   }
@@ -1683,8 +1733,14 @@ class SurveyResultsPage extends StatelessWidget {
                           ? '${r.peakHr!.toStringAsFixed(0)} BPM'
                           : '--'
                     ),
-                    ('Warmth rating', r.warmthRating ?? '--'),
-                    ('Relaxation rating', r.relaxationRating ?? '--'),
+                    (
+                      'Felt more relaxed',
+                      _agreementText(r.relaxationAgreement)
+                    ),
+                    (
+                      'Would use in private',
+                      _agreementText(r.usageAgreement)
+                    ),
                   ],
                 ),
               ],

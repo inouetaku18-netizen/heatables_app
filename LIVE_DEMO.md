@@ -27,7 +27,7 @@ instance, and the BLE send callback into the demo page.
 ```
 Ready → Warmth intensity → Baseline → Brief activation → Breathing
       → Relaxation intro → Relaxation → Welcome back
-      → Warmth rating → Relaxation rating → Summary  (→ Start Again)
+      → Survey statement 1 → Survey statement 2 → Summary  (→ Start Again)
 Exit (X / back) at any point → Survey results list
 ```
 
@@ -99,24 +99,26 @@ repeatedly** (full system vibration, once per second).
 ### 6. Welcome back
 Shows "Welcome back" and keeps vibrating until the participant taps **I'm back**.
 
-### 7. Ratings
-Two one-tap questions (answer advances immediately):
+### 7. Survey
+Two statements, each rated on a **vertical 7-point Likert scale**
+(1 – Strongly Disagree … 7 – Strongly Agree). One tap selects and advances:
 
-1. *How did the warmth feel?* — Barely noticeable / Comfortable / Too warm
-2. *Did the thermal feedback feel relaxing?* — Not really / Somewhat / Yes
+1. *The device helped me feel more relaxed.*
+2. *I would use this device during stressful days in private.*
 
 ### 8. Summary
 Compact card: Baseline, Peak HR (tracked from breathing through relaxation),
-Trigger (Automatic/Demo), Intensity (e.g. "Medium · 130"), both ratings.
+Trigger (Automatic/Demo), Intensity (e.g. "Medium · 130"), and both agreement
+ratings (e.g. "6 / 7").
 **Start Again** stops heating, clears participant state, and schedules a fresh
 baseline calibration for the next participant — BLE connections and the chosen
 intensity are kept.
 
 ## Survey results
 
-Every run that reached the ratings is stored as a `DemoSurveyResult`
-(timestamp, intensity, baseline, peak HR, trigger source, both ratings) in an
-in-memory session list. The list is **only visible when leaving the demo flow**
+Every run that reached the survey is stored as a `DemoSurveyResult`
+(timestamp, intensity, baseline, peak HR, trigger source, and both 1–7
+agreement scores) in an in-memory session list. The list is **only visible when leaving the demo flow**
 (X or system back): exiting first saves an unfinished-but-rated run, then shows
 the *Survey results* page with one card per run. The list survives re-entering
 the demo but not an app restart.
