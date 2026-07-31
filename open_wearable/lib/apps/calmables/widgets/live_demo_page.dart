@@ -103,7 +103,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   static const Duration _breathRampDuration = Duration(seconds: 10);
   static const Duration _demoTriggerRevealDelay = Duration(seconds: 20);
   static const Duration _relaxEndOptionDelay = Duration(seconds: 30);
-  static const Duration _welcomeBackDuration = Duration(milliseconds: 1800);
+  static const Duration _relaxMinDuration = Duration(seconds: 25);
 
   static const List<String> _intensityLevels = ['Low', 'Medium', 'High'];
   static const List<int> _intensityPwm = [_pwmLow, _pwmMedium, _pwmHigh];
@@ -142,11 +142,10 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   int _aboveThresholdCount = 0;
   DateTime? _breathingStartedAt;
 
-  // Relaxation: heating stays active until the (smoothed) HR falls back
-  // below the deactivation threshold — the same hysteresis value the
-  // HR-based autopilot mode uses. Armed once HR has been elevated so a
-  // demo-triggered run does not end immediately.
-  bool _relaxDeactivationArmed = false;
+  // Relaxation: runs at least _relaxMinDuration; after that, heating stays
+  // active until the (smoothed) HR falls below the deactivation threshold —
+  // the same hysteresis value the HR-based autopilot mode uses.
+  DateTime? _relaxationStartedAt;
   int _belowThresholdCount = 0;
   bool _relaxEndAvailable = false;
 
@@ -241,21 +240,24 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     }
 
     // During relaxation, heating stays on until HR has recovered below the
-    // deactivation threshold (same hysteresis as the autopilot mode).
+    // deactivation threshold (same hysteresis as the autopilot mode) —
+    // but never before the minimum relaxation duration has passed.
     if (_step == _DemoStep.relaxationRunning) {
       final result = widget.calibration.latestResult;
-      if (result != null) {
+      final startedAt = _relaxationStartedAt;
+      if (result != null &&
+          startedAt != null &&
+          DateTime.now().difference(startedAt) >= _relaxMinDuration) {
         final deactivateThreshold = result.baselineHeartRate +
             0.2 * (result.triggerThreshold - result.baselineHeartRate);
-        if (bpm >= deactivateThreshold) {
-          _relaxDeactivationArmed = true;
-          _belowThresholdCount = 0;
-        } else if (_relaxDeactivationArmed) {
+        if (bpm < deactivateThreshold) {
           _belowThresholdCount++;
           if (_belowThresholdCount >= _triggerDebounceSamples) {
             _onRelaxationComplete();
             return;
           }
+        } else {
+          _belowThresholdCount = 0;
         }
       }
     }
@@ -314,10 +316,11 @@ class _LiveDemoPageState extends State<LiveDemoPage>
       case _DemoStep.relaxationRunning:
         _enterRelaxation();
       case _DemoStep.welcomeBack:
-        _stepTimer = Timer(
-          _welcomeBackDuration,
-          () => _goTo(_DemoStep.warmthRating),
-        );
+        // Vibrate repeatedly until the user confirms they are back.
+        unawaited(HapticFeedback.vibrate());
+        _stepTimer = Timer.periodic(const Duration(milliseconds: 1000), (_) {
+          unawaited(HapticFeedback.vibrate());
+        });
       case _DemoStep.summary:
         _saveSurveyResult();
       default:
@@ -423,7 +426,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   }
 
   void _enterRelaxation() {
-    _relaxDeactivationArmed = false;
+    _relaxationStartedAt = DateTime.now();
     _belowThresholdCount = 0;
     _relaxEndAvailable = false;
     _relaxationController?.dispose();
@@ -442,17 +445,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     if (_step != _DemoStep.relaxationRunning) return;
     unawaited(_setPwm(0));
     _trackPeak = false;
-    unawaited(_playReturnHaptic());
     _goTo(_DemoStep.welcomeBack);
-  }
-
-  /// A short pattern of pulses is easier to notice than a single click,
-  /// while still feeling gentle.
-  Future<void> _playReturnHaptic() async {
-    for (var i = 0; i < 3; i++) {
-      await HapticFeedback.mediumImpact();
-      await Future<void>.delayed(const Duration(milliseconds: 220));
-    }
   }
 
   // ── Ratings ────────────────────────────────────────────────────────────────
@@ -488,7 +481,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
       _resultSaved = false;
       _aboveThresholdCount = 0;
       _breathingStartedAt = null;
-      _relaxDeactivationArmed = false;
+      _relaxationStartedAt = null;
       _belowThresholdCount = 0;
       _relaxEndAvailable = false;
       // Next participant gets a fresh personal baseline; BLE connections
@@ -1101,13 +1094,19 @@ class _LiveDemoPageState extends State<LiveDemoPage>
 
   Widget _buildWelcomeBack() {
     final theme = Theme.of(context);
-    return Center(
-      child: Text(
-        'Welcome back',
-        style: theme.textTheme.headlineMedium?.copyWith(
-          fontWeight: FontWeight.w600,
-          letterSpacing: -0.4,
-          color: theme.colorScheme.onSurface,
+    return _ScreenFrame(
+      footer: _PrimaryButton(
+        label: "I'm back",
+        onPressed: () => _goTo(_DemoStep.warmthRating),
+      ),
+      child: Center(
+        child: Text(
+          'Welcome back',
+          style: theme.textTheme.headlineMedium?.copyWith(
+            fontWeight: FontWeight.w600,
+            letterSpacing: -0.4,
+            color: theme.colorScheme.onSurface,
+          ),
         ),
       ),
     );
