@@ -89,12 +89,9 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     with TickerProviderStateMixin {
   static const Color _accent = Color(0xFF009682);
 
-  // PWM levels stay inside the existing warmth bands used by the manual
-  // control (<85 low, <170 medium, >=170 high). No new safety parameters —
-  // every write goes through the same central BLE path as manual control.
-  static const int _pwmLow = 70;
-  static const int _pwmMedium = 130;
-  static const int _pwmHigh = 200;
+  // Intensity is a free 0–255 PWM value like on the main Calmables page.
+  // No new safety parameters — every write goes through the same central
+  // BLE path as manual control.
 
   // Guided breathing ramps from 30 breaths/min up to 50 breaths/min over
   // the breathing phase.
@@ -105,8 +102,6 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   static const Duration _relaxEndOptionDelay = Duration(seconds: 30);
   static const Duration _relaxMinDuration = Duration(seconds: 25);
 
-  static const List<String> _intensityLevels = ['Low', 'Medium', 'High'];
-  static const List<int> _intensityPwm = [_pwmLow, _pwmMedium, _pwmHigh];
 
   _DemoStep _step = _DemoStep.ready;
 
@@ -137,7 +132,8 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   String? _relaxationRating;
   bool _demoTriggerAvailable = false;
   bool _recalibrateOnNextRun = false;
-  int _selectedIntensityIndex = 1;
+  int _demoPwm = 130;
+  bool _previewOn = false;
   bool _resultSaved = false;
   int _aboveThresholdCount = 0;
   DateTime? _breathingStartedAt;
@@ -291,8 +287,10 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     if (_thermalStarted) return;
     _thermalStarted = true;
     _triggerSource = source;
-    unawaited(_setPwm(_intensityPwm[_selectedIntensityIndex]));
+    unawaited(_setPwm(_demoPwm));
   }
+
+  String _intensityDescription() => '${_warmthLabel(_demoPwm)} · $_demoPwm';
 
   // ── State machine transitions ──────────────────────────────────────────────
 
@@ -303,12 +301,11 @@ class _LiveDemoPageState extends State<LiveDemoPage>
 
     switch (step) {
       case _DemoStep.intensitySelect:
-        // Preview the pre-selected level right away so tapping is only
-        // needed to switch levels.
-        unawaited(_setPwm(_intensityPwm[_selectedIntensityIndex]));
-        // Start measuring the resting baseline in the background already,
-        // so the next step has valid heart rates from the start.
-        _startBackgroundCalibration();
+        // Preview heating starts right away at the current slider value.
+        // Only the HR signal itself warms up in the background here; the
+        // baseline aggregation starts when the user continues.
+        _previewOn = true;
+        unawaited(_setPwm(_demoPwm));
       case _DemoStep.baseline:
         _enterBaseline();
       case _DemoStep.breathing:
@@ -335,7 +332,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     LiveDemoPage.sessionResults.add(
       DemoSurveyResult(
         timestamp: DateTime.now(),
-        intensity: _intensityLevels[_selectedIntensityIndex],
+        intensity: _intensityDescription(),
         baseline: widget.calibration.latestResult?.baselineHeartRate,
         peakHr: _peakHr,
         triggerSource: _triggerSource,
@@ -362,9 +359,10 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     );
   }
 
-  /// Starts (or restarts) the baseline calibration if needed. Runs silently
-  /// in the background; the baseline screen only visualizes its state.
-  void _startBackgroundCalibration() {
+  /// Starts (or restarts) the baseline aggregation if needed. The HR signal
+  /// itself already streams from the moment the demo page opens; only the
+  /// 30-second aggregation window starts here.
+  void _startCalibrationIfNeeded() {
     final calibration = widget.calibration;
     if (calibration.isCalibrating) return;
     if (_recalibrateOnNextRun || calibration.latestResult == null) {
@@ -380,8 +378,9 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   }
 
   void _enterBaseline() {
-    // Fallback in case the background calibration was not started yet.
-    _startBackgroundCalibration();
+    // The aggregation window intentionally starts only now — when the user
+    // has continued to the baseline step — not while selecting intensity.
+    _startCalibrationIfNeeded();
     _uiTick = Timer.periodic(const Duration(milliseconds: 500), (_) {
       if (mounted) setState(() {});
     });
@@ -478,6 +477,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
       _peakHr = null;
       _trackPeak = false;
       _demoTriggerAvailable = false;
+      _previewOn = false;
       _resultSaved = false;
       _aboveThresholdCount = 0;
       _breathingStartedAt = null;
@@ -639,7 +639,8 @@ class _LiveDemoPageState extends State<LiveDemoPage>
       footer: _PrimaryButton(
         label: 'Continue',
         onPressed: () {
-          // Stop the preview heating before moving on.
+          // Always switch the preview heating off before moving on.
+          _previewOn = false;
           unawaited(_setPwm(0));
           _goTo(_DemoStep.baseline);
         },
@@ -674,8 +675,8 @@ class _LiveDemoPageState extends State<LiveDemoPage>
           ),
           const SizedBox(height: 12),
           Text(
-            'Tap a level to feel it. The selected level is used for the '
-            'thermal feedback.',
+            'Adjust the warmth used for the thermal feedback. '
+            'You can feel it while adjusting.',
             textAlign: TextAlign.center,
             style: theme.textTheme.bodyMedium?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
@@ -683,20 +684,98 @@ class _LiveDemoPageState extends State<LiveDemoPage>
             ),
           ),
           const SizedBox(height: 28),
-          for (var i = 0; i < _intensityLevels.length; i++) ...[
-            _IntensityOption(
-              label: _intensityLevels[i],
-              selected: _selectedIntensityIndex == i,
-              onTap: () {
-                unawaited(HapticFeedback.selectionClick());
-                setState(() => _selectedIntensityIndex = i);
-                // Preview the tapped level through the normal control path;
-                // it is switched off again when leaving this screen.
-                unawaited(_setPwm(_intensityPwm[i]));
-              },
+          Container(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+            decoration: BoxDecoration(
+              color: _panelColor(theme),
+              borderRadius: BorderRadius.circular(14),
             ),
-            const SizedBox(height: 10),
-          ],
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Warmth',
+                      style: theme.textTheme.bodyMedium
+                          ?.copyWith(fontWeight: FontWeight.w600),
+                    ),
+                    Row(
+                      children: [
+                        Text(
+                          _previewOn ? 'ON' : 'OFF',
+                          style: TextStyle(
+                            color: _previewOn ? _accent : Colors.grey,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Switch(
+                          value: _previewOn,
+                          activeThumbColor: _accent,
+                          activeTrackColor: _accent.withValues(alpha: 0.3),
+                          onChanged: (v) {
+                            setState(() => _previewOn = v);
+                            unawaited(_setPwm(v ? _demoPwm : 0));
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Intensity',
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(color: Colors.grey.shade600),
+                    ),
+                    Text(
+                      _warmthLabel(_demoPwm),
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: _pwmColor(_demoPwm),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+                SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    trackHeight: 4.0,
+                    trackShape: const _GradientSliderTrackShape(),
+                    thumbColor: _pwmColor(_demoPwm),
+                    activeTrackColor: Colors.transparent,
+                    inactiveTrackColor: Colors.transparent,
+                    overlayColor: _pwmColor(_demoPwm).withValues(alpha: 0.2),
+                    showValueIndicator: ShowValueIndicator.onlyForDiscrete,
+                    valueIndicatorColor: Colors.grey.shade700,
+                    valueIndicatorTextStyle: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 12,
+                    ),
+                  ),
+                  child: Slider(
+                    value: _demoPwm.toDouble(),
+                    min: 0,
+                    max: 255,
+                    divisions: 255,
+                    label: _demoPwm.toString(),
+                    onChanged: (v) {
+                      setState(() => _demoPwm = v.round());
+                      if (_previewOn) {
+                        unawaited(_setPwm(_demoPwm));
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -1205,7 +1284,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
                   null => '--',
                 }
               ),
-              ('Intensity', _intensityLevels[_selectedIntensityIndex]),
+              ('Intensity', _intensityDescription()),
               ('Warmth rating', _warmthRating ?? '--'),
               ('Relaxation rating', _relaxationRating ?? '--'),
             ],
@@ -1340,60 +1419,6 @@ class _OptionButton extends StatelessWidget {
   }
 }
 
-class _IntensityOption extends StatelessWidget {
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  const _IntensityOption({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    const accent = Color(0xFF009682);
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: BoxDecoration(
-          color: selected
-              ? accent.withValues(alpha: 0.08)
-              : theme.colorScheme.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: selected ? accent : Colors.transparent,
-            width: 1.5,
-          ),
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Text(
-                label,
-                style: theme.textTheme.bodyLarge?.copyWith(
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                ),
-              ),
-            ),
-            Icon(
-              selected
-                  ? Icons.check_circle_rounded
-                  : Icons.radio_button_unchecked_rounded,
-              size: 22,
-              color: selected ? accent : theme.colorScheme.outlineVariant,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _StatusRow extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -1417,7 +1442,7 @@ class _StatusRow extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerLow,
+        color: _panelColor(theme),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Row(
@@ -1480,7 +1505,7 @@ class _StatTile extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerLow,
+        color: _panelColor(theme),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
@@ -1535,7 +1560,7 @@ class _ChartCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.fromLTRB(10, 12, 10, 8),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerLow,
+        color: _panelColor(theme),
         borderRadius: BorderRadius.circular(14),
       ),
       child: child,
@@ -1554,7 +1579,7 @@ class _SummaryCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerLow,
+        color: _panelColor(theme),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
@@ -1799,5 +1824,125 @@ class _RelaxationCircle extends StatelessWidget {
         );
       },
     );
+  }
+}
+
+// ── Shared styling helpers ────────────────────────────────────────────────────
+
+/// Neutral grey panel background — the seed-tinted M3 surfaces look pink.
+Color _panelColor(ThemeData theme) => theme.brightness == Brightness.dark
+    ? const Color(0xFF2A2A2C)
+    : const Color(0xFFF1F1F3);
+
+Color _pwmColor(int pwm) {
+  final t = (pwm / 255.0).clamp(0.0, 1.0);
+  if (t <= 0.33) {
+    return Color.lerp(
+      const Color(0xFF2196F3), // blue
+      const Color(0xFF4CAF50), // green
+      t / 0.33,
+    )!;
+  }
+  if (t <= 0.66) {
+    return Color.lerp(
+      const Color(0xFF4CAF50), // green
+      const Color(0xFFFF9800), // orange
+      (t - 0.33) / 0.33,
+    )!;
+  }
+  return Color.lerp(
+    const Color(0xFFFF9800), // orange
+    const Color(0xFFF44336), // red
+    (t - 0.66) / 0.34,
+  )!;
+}
+
+String _warmthLabel(int pwm) {
+  if (pwm == 0) return 'Off';
+  if (pwm < 85) return 'Low';
+  if (pwm < 170) return 'Medium';
+  return 'High';
+}
+
+// Same gradient track as the manual control on the main Calmables page.
+class _GradientSliderTrackShape extends SliderTrackShape
+    with BaseSliderTrackShape {
+  const _GradientSliderTrackShape();
+
+  static const _gradientColors = [
+    Color(0xFF2196F3), // blue
+    Color(0xFF4CAF50), // green
+    Color(0xFFFF9800), // orange
+    Color(0xFFF44336), // red
+  ];
+
+  @override
+  Rect getPreferredRect({
+    required RenderBox parentBox,
+    Offset offset = Offset.zero,
+    required SliderThemeData sliderTheme,
+    bool isEnabled = false,
+    bool isDiscrete = false,
+  }) {
+    const trackHeight = 4.0;
+    final thumbWidth = (sliderTheme.thumbShape ?? const RoundSliderThumbShape())
+        .getPreferredSize(isEnabled, isDiscrete)
+        .width;
+    final trackLeft = offset.dx + thumbWidth / 2;
+    final trackTop = offset.dy + (parentBox.size.height - trackHeight) / 2;
+    final trackRight = trackLeft + parentBox.size.width - thumbWidth;
+    return Rect.fromLTRB(
+      trackLeft,
+      trackTop,
+      trackRight,
+      trackTop + trackHeight,
+    );
+  }
+
+  @override
+  void paint(
+    PaintingContext context,
+    Offset offset, {
+    required RenderBox parentBox,
+    required SliderThemeData sliderTheme,
+    required Animation<double> enableAnimation,
+    required TextDirection textDirection,
+    required Offset thumbCenter,
+    Offset? secondaryOffset,
+    bool isEnabled = false,
+    bool isDiscrete = false,
+    double additionalActiveTrackHeight = 2,
+  }) {
+    final trackRect = getPreferredRect(
+      parentBox: parentBox,
+      offset: offset,
+      sliderTheme: sliderTheme,
+      isEnabled: isEnabled,
+      isDiscrete: isDiscrete,
+    );
+    const radius = Radius.circular(4);
+    final clampedThumb = thumbCenter.dx.clamp(trackRect.left, trackRect.right);
+
+    // Full grey background track (always visible)
+    context.canvas.drawRRect(
+      RRect.fromRectAndRadius(trackRect, radius),
+      Paint()..color = Colors.grey.shade300,
+    );
+
+    // Active (left) portion — gradient overlay
+    if (clampedThumb > trackRect.left) {
+      final activeRect = Rect.fromLTRB(
+        trackRect.left,
+        trackRect.top - additionalActiveTrackHeight / 2,
+        clampedThumb,
+        trackRect.bottom + additionalActiveTrackHeight / 2,
+      );
+      context.canvas.drawRRect(
+        RRect.fromRectAndRadius(activeRect, radius),
+        Paint()
+          ..shader = const LinearGradient(colors: _gradientColors)
+              .createShader(trackRect),
+      );
+    }
   }
 }
