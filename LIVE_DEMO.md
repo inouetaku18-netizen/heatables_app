@@ -107,7 +107,8 @@ Shows "Welcome back" and keeps vibrating until the participant taps **I'm back**
 
 ### 7. Survey
 Two statements, each rated on a **vertical 7-point Likert scale**
-(1 – Strongly Disagree … 7 – Strongly Agree). One tap selects and advances:
+(1 – Strongly Disagree … 7 – Strongly Agree). Tapping a value only marks it;
+**Continue** stays disabled until an answer is marked and confirms it:
 
 1. *The device helped me feel more relaxed.*
 2. *I would use this device during stressful days in private.*
@@ -116,9 +117,10 @@ Two statements, each rated on a **vertical 7-point Likert scale**
 Compact card: Baseline, Peak HR (tracked from breathing through relaxation),
 Trigger (Automatic/Demo), Intensity (e.g. "Medium · 130"), and both agreement
 ratings (e.g. "6 / 7").
-**Start Again** stops heating, clears participant state, and schedules a fresh
-baseline calibration for the next participant — BLE connections and the chosen
-intensity are kept.
+**Start Again** stops heating, clears participant state, and discards the
+baseline outright (`HrCalibration.reset()`), so the next participant always
+gets a freshly measured baseline — even if the demo is closed and reopened in
+between. BLE connections and the chosen intensity are kept.
 
 ## Survey results
 

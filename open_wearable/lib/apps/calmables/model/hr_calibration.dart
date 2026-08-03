@@ -113,6 +113,16 @@ class HrCalibration {
     _qualitySubscription = null;
   }
 
+  /// Stops any running measurement and discards its result, so the next
+  /// [start] begins from scratch — including the elapsed time.
+  void reset() {
+    stop();
+    _samples.clear();
+    _latestResult = null;
+    _startTime = null;
+    onResultUpdated?.call(null);
+  }
+
   /// Manually set Baseline and Trigger without running a calibration.
   void setManualResult({required double baseline, required double trigger}) {
     _latestResult = CalibrationResult(

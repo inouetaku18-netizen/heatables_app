@@ -146,6 +146,9 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   bool _trackPeak = false;
   int? _relaxationAgreement;
   int? _usageAgreement;
+
+  /// Marked-but-not-yet-confirmed answer on the current survey screen.
+  int? _pendingAgreement;
   bool _demoTriggerAvailable = false;
   bool _recalibrateOnNextRun = false;
   int _demoPwm = 130;
@@ -337,6 +340,10 @@ class _LiveDemoPageState extends State<LiveDemoPage>
         _stepTimer = Timer.periodic(const Duration(milliseconds: 1000), (_) {
           unawaited(HapticFeedback.vibrate());
         });
+      case _DemoStep.relaxationStatement:
+      case _DemoStep.usageStatement:
+        // Each statement starts unanswered.
+        _pendingAgreement = null;
       case _DemoStep.summary:
         _saveSurveyResult();
       default:
@@ -383,17 +390,20 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   /// 30-second aggregation window starts here.
   void _startCalibrationIfNeeded() {
     final calibration = widget.calibration;
-    if (calibration.isCalibrating) return;
-    if (_recalibrateOnNextRun || calibration.latestResult == null) {
-      _recalibrateOnNextRun = false;
-      // stop() before start() so the existing subscriptions are re-created
-      // cleanly for the next participant.
-      calibration.stop();
-      calibration.start(
-        heartRateStream: widget.heartRateStream,
-        signalQualityStream: widget.signalQualityStream,
-      );
+    // An explicit restart always wins, even while a measurement is still
+    // running — otherwise its timer would keep counting from the previous run.
+    if (!_recalibrateOnNextRun &&
+        (calibration.isCalibrating || calibration.latestResult != null)) {
+      return;
     }
+    _recalibrateOnNextRun = false;
+    // stop() before start() so the existing subscriptions are re-created
+    // cleanly and the elapsed time starts from zero.
+    calibration.stop();
+    calibration.start(
+      heartRateStream: widget.heartRateStream,
+      signalQualityStream: widget.signalQualityStream,
+    );
   }
 
   void _enterBaseline() {
@@ -469,15 +479,18 @@ class _LiveDemoPageState extends State<LiveDemoPage>
 
   // ── Ratings ────────────────────────────────────────────────────────────────
 
-  void _selectRelaxationStatement(int value) {
+  void _markAgreement(int value) {
     unawaited(HapticFeedback.selectionClick());
-    _relaxationAgreement = value;
+    setState(() => _pendingAgreement = value);
+  }
+
+  void _confirmRelaxationStatement() {
+    _relaxationAgreement = _pendingAgreement;
     _goTo(_DemoStep.usageStatement);
   }
 
-  void _selectUsageStatement(int value) {
-    unawaited(HapticFeedback.selectionClick());
-    _usageAgreement = value;
+  void _confirmUsageStatement() {
+    _usageAgreement = _pendingAgreement;
     _goTo(_DemoStep.summary);
   }
 
@@ -488,12 +501,16 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     _breathingController?.stop();
     _relaxationController?.stop();
     unawaited(_setPwm(0));
+    // Drop the previous participant's baseline outright, so the next run
+    // always measures anew — even if the demo is closed and reopened first.
+    widget.calibration.reset();
     setState(() {
       _step = _DemoStep.ready;
       _triggerSource = null;
       _thermalStarted = false;
       _relaxationAgreement = null;
       _usageAgreement = null;
+      _pendingAgreement = null;
       _peakHr = null;
       _trackPeak = false;
       _demoTriggerAvailable = false;
@@ -524,13 +541,13 @@ class _LiveDemoPageState extends State<LiveDemoPage>
       _DemoStep.relaxationStatement => _buildLikertScreen(
           number: 1,
           statement: 'The device helped me feel more relaxed.',
-          onSelected: _selectRelaxationStatement,
+          onConfirmed: _confirmRelaxationStatement,
         ),
       _DemoStep.usageStatement => _buildLikertScreen(
           number: 2,
           statement: 'I would use this device during stressful days '
               'in private.',
-          onSelected: _selectUsageStatement,
+          onConfirmed: _confirmUsageStatement,
         ),
       _DemoStep.summary => _buildSummary(),
     };
@@ -1001,40 +1018,72 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   Widget _buildLikertScreen({
     required int number,
     required String statement,
-    required ValueChanged<int> onSelected,
+    required VoidCallback onConfirmed,
   }) {
     final theme = Theme.of(context);
-    // The survey pages carry no icon, chart or primary button, but keep the
-    // shared horizontal padding and bottom margin.
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(
-        _kScreenHPadding,
-        12,
-        _kScreenHPadding,
-        _kFooterBottomPadding,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(
-            '$number. $statement',
-            style: theme.textTheme.titleLarge?.copyWith(
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.2,
-              height: 1.3,
+    // The survey pages carry no icon or chart, but keep the shared horizontal
+    // padding and the same footer block, so the button sits where it does on
+    // every other screen.
+    return Column(
+      children: [
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(
+              _kScreenHPadding,
+              12,
+              _kScreenHPadding,
+              0,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  '$number. $statement',
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.2,
+                    height: 1.3,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                for (var value = 1; value <= _likertPoints; value++) ...[
+                  _LikertOption(
+                    value: value,
+                    label: _likertLabel(value),
+                    selected: _pendingAgreement == value,
+                    onTap: () => _markAgreement(value),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ],
             ),
           ),
-          const SizedBox(height: 24),
-          for (var value = 1; value <= _likertPoints; value++) ...[
-            _LikertOption(
-              value: value,
-              label: _likertLabel(value),
-              onTap: () => onSelected(value),
-            ),
-            const SizedBox(height: 8),
-          ],
-        ],
-      ),
+        ),
+        const SizedBox(height: _kChartToFooter),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            _kScreenHPadding,
+            0,
+            _kScreenHPadding,
+            _kFooterBottomPadding,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                height: _kPrimaryButtonHeight,
+                width: double.infinity,
+                child: _PrimaryButton(
+                  label: 'Continue',
+                  onPressed: _pendingAgreement == null ? null : onConfirmed,
+                ),
+              ),
+              const SizedBox(height: _kPrimaryToSecondary),
+              const SizedBox(height: _kSecondarySlotHeight),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -1462,36 +1511,49 @@ class _PrimaryButton extends StatelessWidget {
 class _LikertOption extends StatelessWidget {
   final int value;
   final String label;
+  final bool selected;
   final VoidCallback onTap;
 
   const _LikertOption({
     required this.value,
     required this.label,
+    required this.selected,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
+    const accent = Color(0xFF009682);
     final theme = Theme.of(context);
     return Semantics(
       button: true,
+      selected: selected,
       label: label,
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(14),
-        child: Container(
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
           height: 54,
           padding: const EdgeInsets.symmetric(horizontal: 16),
           decoration: BoxDecoration(
-            color: _panelColor(theme),
+            color: selected
+                ? accent.withValues(alpha: 0.08)
+                : _panelColor(theme),
             borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: selected ? accent : Colors.transparent,
+              width: 1.5,
+            ),
           ),
           child: Row(
             children: [
               Icon(
-                Icons.circle_outlined,
+                selected
+                    ? Icons.check_circle_rounded
+                    : Icons.circle_outlined,
                 size: 22,
-                color: theme.colorScheme.onSurfaceVariant,
+                color: selected ? accent : theme.colorScheme.onSurfaceVariant,
               ),
               const SizedBox(width: 14),
               Text(

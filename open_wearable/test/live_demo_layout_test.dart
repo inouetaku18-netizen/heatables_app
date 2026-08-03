@@ -140,12 +140,32 @@ void main() {
       );
 
       // Walk the survey to the summary so those screens are laid out too.
+      // Each statement is marked first and confirmed with the button.
       await tester.tap(find.text("I'm back"));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Strongly Agree'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Strongly Agree'));
-      await tester.pumpAndSettle();
+      for (var statement = 0; statement < 2; statement++) {
+        final confirm = find.widgetWithText(FilledButton, 'Continue');
+        expect(
+          tester.widget<FilledButton>(confirm).onPressed,
+          isNull,
+          reason: 'confirm stays disabled until an answer is marked',
+        );
+        expect(buttonTops, contains(tester.getTopLeft(confirm).dy));
+
+        // On short screens the scale scrolls, so bring the option into view.
+        await tester.ensureVisible(find.text('Strongly Agree'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Strongly Agree'));
+        await tester.pumpAndSettle();
+        expect(
+          tester.widget<FilledButton>(confirm).onPressed,
+          isNotNull,
+          reason: 'marking an answer must not advance on its own',
+        );
+
+        await tester.tap(confirm);
+        await tester.pumpAndSettle();
+      }
       expect(find.text('Demo complete'), findsOneWidget);
     });
   });
