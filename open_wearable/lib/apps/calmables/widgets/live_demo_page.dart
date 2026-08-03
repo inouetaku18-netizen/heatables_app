@@ -788,6 +788,9 @@ class _LiveDemoPageState extends State<LiveDemoPage>
                     _recalibrateOnNextRun = true;
                     _goTo(_DemoStep.baseline);
                   },
+            style: TextButton.styleFrom(
+              foregroundColor: theme.colorScheme.onSurfaceVariant,
+            ),
             child: const Text('Restart measurement'),
           ),
         ],
