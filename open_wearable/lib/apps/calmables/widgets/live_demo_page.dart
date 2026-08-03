@@ -312,7 +312,10 @@ class _LiveDemoPageState extends State<LiveDemoPage>
 
   void _goTo(_DemoStep step) {
     _cancelTimers();
+    // Both visuals repeat indefinitely; stop them when their screen is left
+    // so no ticker keeps running for the rest of the session.
     _breathingController?.stop();
+    _relaxationController?.stop();
     setState(() => _step = step);
 
     switch (step) {
@@ -542,18 +545,22 @@ class _LiveDemoPageState extends State<LiveDemoPage>
       },
       child: Scaffold(
         backgroundColor: Theme.of(context).colorScheme.surface,
-        appBar: isQuiet
-            ? null
-            : AppBar(
-                backgroundColor: Colors.transparent,
-                elevation: 0,
-                scrolledUnderElevation: 0,
-                leading: IconButton(
+        // The bar stays mounted on every screen so the body origin — and with
+        // it every shared layout anchor — never shifts between screens. The
+        // quiet screens simply leave it empty.
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          automaticallyImplyLeading: false,
+          leading: isQuiet
+              ? null
+              : IconButton(
                   icon: const Icon(Icons.close_rounded),
                   tooltip: 'Exit demo',
                   onPressed: _exitDemo,
                 ),
-              ),
+        ),
         body: SafeArea(
           child: AnimatedSwitcher(
             duration: _reducedMotion
@@ -581,22 +588,20 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     final calmablesConnected = widget.isCalmablesConnected();
 
     return _ScreenFrame(
-      scrollable: true,
-      footer: _PrimaryButton(
+      header: const _ScreenHeader(
+        icon: Icons.spa_rounded,
+        title: _kReadyTitle,
+        subtitle: _kReadyDescription,
+      ),
+      scrollContent: true,
+      primaryAction: _PrimaryButton(
         label: 'Start Demo',
         onPressed:
             _hrSignalActive ? () => _goTo(_DemoStep.intensitySelect) : null,
       ),
-      child: Column(
+      content: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const SizedBox(height: 12),
-          const _ScreenHeader(
-            icon: Icons.spa_rounded,
-            title: 'Calmables',
-            subtitle: 'Thermal biofeedback for short moments of recovery',
-          ),
-          const SizedBox(height: 32),
           _StatusRow(
             icon: Icons.favorite_rounded,
             label: widget.hrSourceName,
@@ -627,8 +632,13 @@ class _LiveDemoPageState extends State<LiveDemoPage>
   Widget _buildIntensitySelect() {
     final theme = Theme.of(context);
     return _ScreenFrame(
-      scrollable: true,
-      footer: _PrimaryButton(
+      header: const _ScreenHeader(
+        icon: Icons.thermostat_rounded,
+        title: _kIntensityTitle,
+        subtitle: _kIntensityDescription,
+      ),
+      scrollContent: true,
+      primaryAction: _PrimaryButton(
         label: 'Continue',
         onPressed: () {
           // Always switch the preview heating off before moving on.
@@ -637,17 +647,9 @@ class _LiveDemoPageState extends State<LiveDemoPage>
           _goTo(_DemoStep.baseline);
         },
       ),
-      child: Column(
+      content: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const SizedBox(height: 12),
-          const _ScreenHeader(
-            icon: Icons.thermostat_rounded,
-            title: 'Stimulation intensity',
-            subtitle: 'Adjust the intensity used for the thermal feedback. '
-                'You can feel it while adjusting.',
-          ),
-          const SizedBox(height: 28),
           Container(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
             decoration: BoxDecoration(
@@ -751,139 +753,115 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     final result = calibration.latestResult;
     final isCalibrating = calibration.isCalibrating;
     final ready = result != null && !isCalibrating;
-    final hr = _currentHr;
 
     return _ScreenFrame(
-      scrollable: true,
-      footer: Column(
-        mainAxisSize: MainAxisSize.min,
+      header: const _ScreenHeader(
+        icon: Icons.favorite_rounded,
+        title: _kBaselineTitle,
+        subtitle: _kBaselineDescription,
+      ),
+      scrollContent: true,
+      content: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (isCalibrating) ...[
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                value: calibration.progressFraction,
-                minHeight: 4,
-                backgroundColor: theme.colorScheme.surfaceContainerHighest,
-                valueColor: const AlwaysStoppedAnimation<Color>(_accent),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Measuring your resting baseline…',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(height: 12),
-          ],
-          _PrimaryButton(
-            label: 'Continue',
-            onPressed: ready ? () => _goTo(_DemoStep.breathing) : null,
+          // Same KPI row position and size as on the activation screen.
+          _kpiRow(
+            leadingLabel: 'Baseline',
+            leadingValue: result != null
+                ? result.baselineHeartRate.toStringAsFixed(0)
+                : '--',
+            trailingValue: result != null
+                ? result.triggerThreshold.toStringAsFixed(0)
+                : '--',
           ),
-          TextButton(
-            onPressed: isCalibrating
-                ? null
-                : () {
-                    _recalibrateOnNextRun = true;
-                    _goTo(_DemoStep.baseline);
-                  },
-            style: TextButton.styleFrom(
-              foregroundColor: theme.colorScheme.onSurfaceVariant,
-            ),
-            child: const Text('Restart measurement'),
+          const SizedBox(height: 20),
+          _currentHeartRateBlock(),
+          SizedBox(
+            height: 44,
+            child: isCalibrating
+                ? Column(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: calibration.progressFraction,
+                          minHeight: 4,
+                          backgroundColor:
+                              theme.colorScheme.surfaceContainerHighest,
+                          valueColor:
+                              const AlwaysStoppedAnimation<Color>(_accent),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'Measuring your resting baseline…',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  )
+                : null,
           ),
         ],
       ),
+      chart: _hrChartCard(),
+      primaryAction: _PrimaryButton(
+        label: 'Continue',
+        onPressed: ready ? () => _goTo(_DemoStep.breathing) : null,
+      ),
+      secondaryAction: TextButton(
+        onPressed: isCalibrating
+            ? null
+            : () {
+                _recalibrateOnNextRun = true;
+                _goTo(_DemoStep.baseline);
+              },
+        style: TextButton.styleFrom(
+          foregroundColor: theme.colorScheme.onSurfaceVariant,
+        ),
+        child: const Text('Restart measurement'),
+      ),
+    );
+  }
+
+  /// Large live heart rate reading used on the baseline screen.
+  Widget _currentHeartRateBlock() {
+    final theme = Theme.of(context);
+    final hr = _currentHr;
+    return Center(
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const SizedBox(height: 4),
-          const _ScreenHeader(
-            icon: Icons.favorite_rounded,
-            title: 'Baseline measurement',
-            subtitle: 'Calmables uses your personal resting heart rate as a '
-                'baseline and derives the activation threshold that starts '
-                'the thermal feedback.',
-          ),
-          const SizedBox(height: 28),
-          Center(
-            child: Column(
-              children: [
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                      hr != null && hr.isFinite ? hr.toStringAsFixed(0) : '--',
-                      style: theme.textTheme.displayLarge?.copyWith(
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: -1,
-                        height: 1,
-                      ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.only(left: 6, bottom: 8),
-                      child: Text(
-                        'BPM',
-                        style: theme.textTheme.titleSmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Current heart rate',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 24),
           Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Expanded(
-                child: _StatTile(
-                  label: 'Baseline',
-                  value: result != null
-                      ? result.baselineHeartRate.toStringAsFixed(0)
-                      : '--',
-                  unit: 'BPM',
-                  color: _accent,
+              Text(
+                hr != null && hr.isFinite ? hr.toStringAsFixed(0) : '--',
+                style: theme.textTheme.displayLarge?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -1,
+                  height: 1,
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _StatTile(
-                  label: 'Trigger threshold',
-                  value: result != null
-                      ? result.triggerThreshold.toStringAsFixed(0)
-                      : '--',
-                  unit: 'BPM',
-                  color: const Color(0xFFFF8F00),
+              Padding(
+                padding: const EdgeInsets.only(left: 6, bottom: 8),
+                child: Text(
+                  'BPM',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 20),
-          _ChartCard(
-            child: SizedBox(
-              height: 150,
-              child: RollingHrChart(
-                rawHrStream: widget.rawHrStream,
-                smoothedHrStream: widget.smoothedHrStream,
-                initialRawData: _rawHrHistory,
-                initialSmoothedData: _smoothedHrHistory,
-                timestampExponent: widget.timestampExponent,
-                timeWindow: 60,
-                baseline: result?.baselineHeartRate,
-                threshold: result?.triggerThreshold,
-              ),
+          const SizedBox(height: 4),
+          Text(
+            'Current heart rate',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
         ],
@@ -893,31 +871,15 @@ class _LiveDemoPageState extends State<LiveDemoPage>
 
   Widget _buildBreathing() {
     return _ScreenFrame(
-      footer: AnimatedOpacity(
-        duration: _reducedMotion
-            ? Duration.zero
-            : const Duration(milliseconds: 400),
-        opacity: _demoTriggerAvailable ? 1 : 0,
-        child: IgnorePointer(
-          ignoring: !_demoTriggerAvailable,
-          child: _PrimaryButton(
-            label: 'Continue with Demo Trigger',
-            onPressed: _onDemoTrigger,
-          ),
-        ),
+      header: const _ScreenHeader(
+        icon: Icons.air_rounded,
+        title: _kActivationTitle,
+        subtitle: _kActivationDescription,
       ),
-      child: Column(
+      content: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const _ScreenHeader(
-            icon: Icons.air_rounded,
-            title: 'Brief activation',
-            subtitle: 'Follow the pulse and match your breathing to its '
-                'rhythm. Keep your breathing light and comfortable.',
-            compact: true,
-          ),
-          const SizedBox(height: 16),
-          _hrAndThresholdRow(),
+          _liveHrKpiRow(),
           Expanded(
             child: Center(
               child: LayoutBuilder(
@@ -933,22 +895,20 @@ class _LiveDemoPageState extends State<LiveDemoPage>
               ),
             ),
           ),
-          _ChartCard(
-            child: SizedBox(
-              height: 110,
-              child: RollingHrChart(
-                rawHrStream: widget.rawHrStream,
-                smoothedHrStream: widget.smoothedHrStream,
-                initialRawData: _rawHrHistory,
-                initialSmoothedData: _smoothedHrHistory,
-                timestampExponent: widget.timestampExponent,
-                timeWindow: 60,
-                baseline: widget.calibration.latestResult?.baselineHeartRate,
-                threshold: widget.calibration.latestResult?.triggerThreshold,
-              ),
-            ),
-          ),
         ],
+      ),
+      chart: _hrChartCard(),
+      primaryAction: AnimatedOpacity(
+        duration:
+            _reducedMotion ? Duration.zero : const Duration(milliseconds: 400),
+        opacity: _demoTriggerAvailable ? 1 : 0,
+        child: IgnorePointer(
+          ignoring: !_demoTriggerAvailable,
+          child: _PrimaryButton(
+            label: 'Continue with Demo Trigger',
+            onPressed: _onDemoTrigger,
+          ),
+        ),
       ),
     );
   }
@@ -964,104 +924,76 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     final theme = Theme.of(context);
     final controller = _relaxationController;
     final hr = _currentHr;
-    return Column(
-      children: [
-        const Padding(
-          padding: EdgeInsets.fromLTRB(24, 20, 24, 0),
-          child: _ScreenHeader(
-            icon: Icons.self_improvement_rounded,
-            title: 'Relaxation',
-            subtitle: 'Take a moment to notice the stimulation. Feel free to '
-                "close your eyes and focus on the sensation. We'll gently "
-                'bring you back in a few moments.',
-            compact: true,
-          ),
-        ),
-        Expanded(
-          child: Center(
-            child: controller == null
-                ? const SizedBox.shrink()
-                : LayoutBuilder(
-                    builder: (context, constraints) => _RelaxationCircle(
-                      controller: controller,
-                      reducedMotion: _reducedMotion,
-                      diameter: _circleDiameter(constraints),
+
+    return _ScreenFrame(
+      header: const _ScreenHeader(
+        icon: Icons.self_improvement_rounded,
+        title: _kRelaxationTitle,
+        subtitle: _kRelaxationDescription,
+      ),
+      content: Column(
+        children: [
+          Expanded(
+            child: Center(
+              child: controller == null
+                  ? const SizedBox.shrink()
+                  : LayoutBuilder(
+                      builder: (context, constraints) => _RelaxationCircle(
+                        controller: controller,
+                        reducedMotion: _reducedMotion,
+                        diameter: _circleDiameter(constraints),
+                      ),
                     ),
-                  ),
-          ),
-        ),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.favorite_rounded, size: 16, color: _accent),
-            const SizedBox(width: 6),
-            Text(
-              hr != null && hr.isFinite
-                  ? '${hr.toStringAsFixed(0)} BPM'
-                  : '--',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: _ChartCard(
-            child: SizedBox(
-              height: 110,
-              child: RollingHrChart(
-                rawHrStream: widget.rawHrStream,
-                smoothedHrStream: widget.smoothedHrStream,
-                initialRawData: _rawHrHistory,
-                initialSmoothedData: _smoothedHrHistory,
-                timestampExponent: widget.timestampExponent,
-                timeWindow: 60,
-                baseline: widget.calibration.latestResult?.baselineHeartRate,
-                threshold: widget.calibration.latestResult?.triggerThreshold,
-              ),
             ),
           ),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
-          child: AnimatedOpacity(
-            duration: _reducedMotion
-                ? Duration.zero
-                : const Duration(milliseconds: 400),
-            opacity: _relaxEndAvailable ? 1 : 0,
-            child: IgnorePointer(
-              ignoring: !_relaxEndAvailable,
-              child: TextButton(
-                onPressed: _onRelaxationComplete,
-                child: Text(
-                  'End relaxation',
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                    fontWeight: FontWeight.w600,
-                  ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.favorite_rounded, size: 16, color: _accent),
+              const SizedBox(width: 6),
+              Text(
+                hr != null && hr.isFinite ? '${hr.toStringAsFixed(0)} BPM' : '--',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
+            ],
+          ),
+        ],
+      ),
+      chart: _hrChartCard(),
+      secondaryAction: AnimatedOpacity(
+        duration:
+            _reducedMotion ? Duration.zero : const Duration(milliseconds: 400),
+        opacity: _relaxEndAvailable ? 1 : 0,
+        child: IgnorePointer(
+          ignoring: !_relaxEndAvailable,
+          child: TextButton(
+            onPressed: _onRelaxationComplete,
+            style: TextButton.styleFrom(
+              foregroundColor: theme.colorScheme.onSurfaceVariant,
+            ),
+            child: const Text(
+              'End relaxation',
+              style: TextStyle(fontWeight: FontWeight.w600),
             ),
           ),
         ),
-      ],
+      ),
     );
   }
 
   Widget _buildWelcomeBack() {
     return _ScreenFrame(
-      footer: _PrimaryButton(
+      header: const _ScreenHeader(
+        icon: Icons.waving_hand_rounded,
+        title: _kWelcomeBackTitle,
+      ),
+      primaryAction: _PrimaryButton(
         label: "I'm back",
         onPressed: () => _goTo(_DemoStep.relaxationStatement),
-      ),
-      child: const Center(
-        child: _ScreenHeader(
-          icon: Icons.waving_hand_rounded,
-          title: 'Welcome back.',
-        ),
       ),
     );
   }
@@ -1072,12 +1004,18 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     required ValueChanged<int> onSelected,
   }) {
     final theme = Theme.of(context);
-    return _ScreenFrame(
-      scrollable: true,
+    // The survey pages carry no icon, chart or primary button, but keep the
+    // shared horizontal padding and bottom margin.
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(
+        _kScreenHPadding,
+        12,
+        _kScreenHPadding,
+        _kFooterBottomPadding,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const SizedBox(height: 12),
           Text(
             '$number. $statement',
             style: theme.textTheme.titleLarge?.copyWith(
@@ -1095,7 +1033,6 @@ class _LiveDemoPageState extends State<LiveDemoPage>
             ),
             const SizedBox(height: 8),
           ],
-          const SizedBox(height: 8),
         ],
       ),
     );
@@ -1105,20 +1042,18 @@ class _LiveDemoPageState extends State<LiveDemoPage>
     final result = widget.calibration.latestResult;
 
     return _ScreenFrame(
-      scrollable: true,
-      footer: _PrimaryButton(
+      header: const _ScreenHeader(
+        icon: Icons.check_rounded,
+        title: _kSummaryTitle,
+      ),
+      scrollContent: true,
+      primaryAction: _PrimaryButton(
         label: 'Start Again',
         onPressed: _startAgain,
       ),
-      child: Column(
+      content: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const SizedBox(height: 8),
-          const _ScreenHeader(
-            icon: Icons.check_rounded,
-            title: 'Demo complete',
-          ),
-          const SizedBox(height: 28),
           _SummaryCard(
             rows: [
               (
@@ -1153,15 +1088,19 @@ class _LiveDemoPageState extends State<LiveDemoPage>
 
   // ── Shared pieces ──────────────────────────────────────────────────────────
 
-  Widget _hrAndThresholdRow() {
-    final hr = _currentHr;
-    final threshold = widget.calibration.latestResult?.triggerThreshold;
+  /// Two-card KPI row — identical size, spacing and position on every screen
+  /// that shows one.
+  Widget _kpiRow({
+    required String leadingLabel,
+    required String leadingValue,
+    required String trailingValue,
+  }) {
     return Row(
       children: [
         Expanded(
           child: _StatTile(
-            label: 'Heart rate',
-            value: hr != null && hr.isFinite ? hr.toStringAsFixed(0) : '--',
+            label: leadingLabel,
+            value: leadingValue,
             unit: 'BPM',
             color: _accent,
           ),
@@ -1170,7 +1109,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
         Expanded(
           child: _StatTile(
             label: 'Trigger threshold',
-            value: threshold != null ? threshold.toStringAsFixed(0) : '--',
+            value: trailingValue,
             unit: 'BPM',
             color: const Color(0xFFFF8F00),
           ),
@@ -1178,100 +1117,310 @@ class _LiveDemoPageState extends State<LiveDemoPage>
       ],
     );
   }
+
+  Widget _liveHrKpiRow() {
+    final hr = _currentHr;
+    final threshold = widget.calibration.latestResult?.triggerThreshold;
+    return _kpiRow(
+      leadingLabel: 'Heart rate',
+      leadingValue: hr != null && hr.isFinite ? hr.toStringAsFixed(0) : '--',
+      trailingValue: threshold != null ? threshold.toStringAsFixed(0) : '--',
+    );
+  }
+
+  /// Live HR chart — same width and height wherever it appears.
+  Widget _hrChartCard() {
+    return _ChartCard(
+      child: RollingHrChart(
+        rawHrStream: widget.rawHrStream,
+        smoothedHrStream: widget.smoothedHrStream,
+        initialRawData: _rawHrHistory,
+        initialSmoothedData: _smoothedHrHistory,
+        timestampExponent: widget.timestampExponent,
+        timeWindow: 60,
+        baseline: widget.calibration.latestResult?.baselineHeartRate,
+        threshold: widget.calibration.latestResult?.triggerThreshold,
+      ),
+    );
+  }
 }
 
 // ── Layout helpers ────────────────────────────────────────────────────────────
 
+// ── Shared screen scaffold ────────────────────────────────────────────────────
+//
+// Every demo screen is built from the same vertical slots so that the icon,
+// heading, description, chart and primary button sit at identical coordinates
+// on all screens. Slots keep their reserved height even when a screen leaves
+// them empty, so switching screens never shifts a shared anchor.
+
+const double _kScreenHPadding = 24;
+const double _kHeaderTopGap = 8;
+const double _kIconCircleSize = 64;
+const double _kIconToTitle = 16;
+const double _kTitleToDescription = 8;
+const double _kHeaderToContent = 20;
+const double _kContentToChart = 16;
+const double _kChartSlotHeight = 116;
+const double _kMinChartSlotHeight = 60;
+const double _kMinContentHeight = 100;
+const double _kChartToFooter = 14;
+const double _kPrimaryButtonHeight = 54;
+const double _kPrimaryToSecondary = 4;
+const double _kSecondarySlotHeight = 40;
+const double _kFooterBottomPadding = 16;
+
+// Single source of truth for the header copy. The reserved header height is
+// measured from these strings, so the content below always starts at the same
+// offset no matter which screen is showing.
+const String _kReadyTitle = 'Calmables';
+const String _kReadyDescription =
+    'Thermal biofeedback for short moments of recovery';
+const String _kIntensityTitle = 'Stimulation intensity';
+const String _kIntensityDescription =
+    'Adjust the intensity used for the thermal feedback. '
+    'You can feel it while adjusting.';
+const String _kBaselineTitle = 'Baseline measurement';
+const String _kBaselineDescription =
+    'Calmables uses your personal resting heart rate as a baseline and '
+    'derives the activation threshold that starts the thermal feedback.';
+const String _kActivationTitle = 'Brief activation';
+const String _kActivationDescription =
+    'Follow the pulse and match your breathing to its rhythm. '
+    'Keep your breathing light and comfortable.';
+const String _kRelaxationTitle = 'Relaxation';
+const String _kRelaxationDescription =
+    'Take a moment to notice the stimulation. Feel free to close your eyes '
+    "and focus on the sensation. We'll gently bring you back in a few moments.";
+const String _kWelcomeBackTitle = 'Welcome back.';
+const String _kSummaryTitle = 'Demo complete';
+
+const List<String> _kHeaderTitles = [
+  _kReadyTitle,
+  _kIntensityTitle,
+  _kBaselineTitle,
+  _kActivationTitle,
+  _kRelaxationTitle,
+  _kWelcomeBackTitle,
+  _kSummaryTitle,
+];
+
+// Only the screens whose content must line up (the KPI cards on the baseline
+// and activation screens) drive the reserved header height. Screens without
+// aligned content — such as relaxation, whose description is the longest —
+// simply extend into their own flexible content area; their icon, heading and
+// description still start at the shared offsets.
+const List<String> _kHeaderDescriptions = [
+  _kBaselineDescription,
+  _kActivationDescription,
+];
+
+TextStyle? _headerTitleStyle(ThemeData theme) =>
+    theme.textTheme.headlineSmall?.copyWith(
+      fontWeight: FontWeight.w700,
+      letterSpacing: -0.3,
+    );
+
+TextStyle? _headerDescriptionStyle(ThemeData theme) =>
+    theme.textTheme.bodyMedium?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+      height: 1.4,
+    );
+
+/// Reserved height of the header block, measured from the longest title and
+/// the longest description across all screens, so the content area below it
+/// starts at the same offset everywhere — also under Dynamic Type.
+double _headerSlotHeight(BuildContext context, double maxWidth) {
+  final theme = Theme.of(context);
+  final scaler = MediaQuery.textScalerOf(context);
+
+  double measure(String text, TextStyle? style) {
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+      textAlign: TextAlign.center,
+      textScaler: scaler,
+    )..layout(maxWidth: maxWidth);
+    return painter.height;
+  }
+
+  var titleHeight = 0.0;
+  for (final title in _kHeaderTitles) {
+    titleHeight = max(titleHeight, measure(title, _headerTitleStyle(theme)));
+  }
+  var descriptionHeight = 0.0;
+  for (final description in _kHeaderDescriptions) {
+    descriptionHeight = max(
+      descriptionHeight,
+      measure(description, _headerDescriptionStyle(theme)),
+    );
+  }
+
+  return _kIconCircleSize +
+      _kIconToTitle +
+      titleHeight +
+      _kTitleToDescription +
+      descriptionHeight;
+}
+
 class _ScreenFrame extends StatelessWidget {
-  final Widget child;
-  final Widget? footer;
-  final bool scrollable;
+  /// Icon + heading + description; always occupies the same reserved height.
+  final _ScreenHeader header;
+
+  /// Flexible middle area. Longer content scrolls inside its slot instead of
+  /// pushing the chart or the button out of place.
+  final Widget? content;
+  final bool scrollContent;
+
+  /// Chart slot — fixed height, identical on every screen that uses one.
+  final Widget? chart;
+
+  /// Bottom slots. Both keep their height when a screen has no action, so the
+  /// primary button never moves.
+  final Widget? primaryAction;
+  final Widget? secondaryAction;
 
   const _ScreenFrame({
-    required this.child,
-    this.footer,
-    this.scrollable = false,
+    required this.header,
+    this.content,
+    this.scrollContent = false,
+    this.chart,
+    this.primaryAction,
+    this.secondaryAction,
   });
 
   @override
   Widget build(BuildContext context) {
-    final content = Padding(
-      padding: const EdgeInsets.fromLTRB(24, 4, 24, 0),
-      child: child,
+    final contentSlot = content ?? const SizedBox.shrink();
+    final headerHeight = _headerSlotHeight(
+      context,
+      MediaQuery.sizeOf(context).width - 2 * _kScreenHPadding,
     );
 
-    return Column(
-      children: [
-        Expanded(
-          child: scrollable ? SingleChildScrollView(child: content) : content,
-        ),
-        if (footer != null)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(24, 12, 24, 16),
-            child: footer,
-          ),
-      ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // The chart slot gives way first when a phone is short. It is derived
+        // only from the viewport and the shared header height, so every screen
+        // ends up with the exact same chart size and position on a device.
+        final available = constraints.maxHeight;
+        final fixedAroundChart = _kHeaderTopGap +
+            headerHeight +
+            _kHeaderToContent +
+            _kContentToChart +
+            _kChartToFooter +
+            _kPrimaryButtonHeight +
+            _kPrimaryToSecondary +
+            _kSecondarySlotHeight +
+            _kFooterBottomPadding;
+        final forContentAndChart = available - fixedAroundChart;
+        final chartHeight = (forContentAndChart - _kMinContentHeight)
+            .clamp(_kMinChartSlotHeight, _kChartSlotHeight);
+
+        return Column(
+            children: [
+              const SizedBox(height: _kHeaderTopGap),
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: _kScreenHPadding),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minHeight: headerHeight),
+                  child: header,
+                ),
+              ),
+              const SizedBox(height: _kHeaderToContent),
+              Expanded(
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: _kScreenHPadding),
+                  child: scrollContent
+                      ? SingleChildScrollView(child: contentSlot)
+                      : contentSlot,
+                ),
+              ),
+              if (chart != null) ...[
+                const SizedBox(height: _kContentToChart),
+                Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: _kScreenHPadding),
+                  child: SizedBox(height: chartHeight, child: chart),
+                ),
+              ],
+              const SizedBox(height: _kChartToFooter),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  _kScreenHPadding,
+                  0,
+                  _kScreenHPadding,
+                  _kFooterBottomPadding,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      height: _kPrimaryButtonHeight,
+                      width: double.infinity,
+                      child: primaryAction,
+                    ),
+                    const SizedBox(height: _kPrimaryToSecondary),
+                    SizedBox(
+                      height: _kSecondarySlotHeight,
+                      child: Center(child: secondaryAction),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+        );
+      },
     );
   }
 }
 
 /// Shared page header: accent icon, bold title, optional supporting text.
+/// Icon size and spacing are identical on every screen.
 class _ScreenHeader extends StatelessWidget {
   final IconData icon;
   final String title;
   final String? subtitle;
 
-  /// Tighter spacing for screens that also host a live visual.
-  final bool compact;
-
   const _ScreenHeader({
     required this.icon,
     required this.title,
     this.subtitle,
-    this.compact = false,
   });
 
   @override
   Widget build(BuildContext context) {
     const accent = Color(0xFF009682);
     final theme = Theme.of(context);
-    final circleSize = compact ? 58.0 : 78.0;
 
     return Column(
+      mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Center(
           child: Container(
-            width: circleSize,
-            height: circleSize,
+            width: _kIconCircleSize,
+            height: _kIconCircleSize,
             decoration: BoxDecoration(
               color: accent.withValues(alpha: 0.10),
               shape: BoxShape.circle,
             ),
-            child: Icon(icon, size: circleSize * 0.48, color: accent),
+            child: Icon(icon, size: _kIconCircleSize * 0.48, color: accent),
           ),
         ),
-        SizedBox(height: compact ? 14 : 22),
+        const SizedBox(height: _kIconToTitle),
         Text(
           title,
           textAlign: TextAlign.center,
-          style: (compact
-                  ? theme.textTheme.titleLarge
-                  : theme.textTheme.headlineSmall)
-              ?.copyWith(
-            fontWeight: FontWeight.w700,
-            letterSpacing: -0.3,
-          ),
+          style: _headerTitleStyle(theme),
         ),
         if (subtitle != null) ...[
-          SizedBox(height: compact ? 6 : 10),
+          const SizedBox(height: _kTitleToDescription),
           Text(
             subtitle!,
             textAlign: TextAlign.center,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-              height: 1.4,
-            ),
+            style: _headerDescriptionStyle(theme),
           ),
         ],
       ],
@@ -1552,10 +1701,14 @@ class _SummaryCard extends StatelessWidget {
                       ),
                     ),
                   ),
-                  Text(
-                    rows[i].$2,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
+                  const SizedBox(width: 12),
+                  Flexible(
+                    child: Text(
+                      rows[i].$2,
+                      textAlign: TextAlign.end,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 ],
