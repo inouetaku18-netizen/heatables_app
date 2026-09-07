@@ -804,8 +804,7 @@ class _LiveDemoPageState extends State<LiveDemoPage>
                         child: LinearProgressIndicator(
                           value: calibration.progressFraction,
                           minHeight: 4,
-                          backgroundColor:
-                              theme.colorScheme.surfaceContainerHighest,
+                          backgroundColor: _panelColor(theme),
                           valueColor:
                               const AlwaysStoppedAnimation<Color>(_accent),
                         ),
